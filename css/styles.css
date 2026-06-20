@@ -50,6 +50,30 @@ a { color: var(--teal-strong); }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .full { width: 100%; }
+.prereq-list {
+  display: grid;
+  gap: 10px;
+}
+.prereq-option {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  justify-content: start;
+  gap: 10px;
+  width: fit-content;
+  max-width: 100%;
+  font-weight: 800;
+  cursor: pointer;
+}
+.prereq-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.prereq-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 .login-page {
   min-height: 100vh;
@@ -432,6 +456,25 @@ tr:last-child td { border-bottom: none; }
   border-radius: 16px;
   margin-top: 10px;
 }
+.component-catalog-grid {
+  display: grid;
+  gap: 10px;
+}
+.component-catalog-row {
+  display: grid;
+  grid-template-columns: 110px 120px 1fr auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid #e4e7ec;
+  border-left: 5px solid var(--accent, var(--line));
+  border-radius: 14px;
+  background: #f8fafc;
+}
+.component-catalog-row.is-inactive {
+  opacity: .72;
+  background: #fff;
+}
 .skill-ref {
   display: grid;
   gap: 8px;
@@ -582,6 +625,7 @@ details summary::-webkit-details-marker { display: none; }
   .main { padding: 18px; }
   .topbar { flex-direction: column; }
   .form-grid, .form-grid.three, .grid.cols-2, .grid.cols-3, .grid.cols-4 { grid-template-columns: 1fr; }
+  .component-catalog-row { grid-template-columns: 1fr; }
   .resource-item { grid-template-columns: 1fr; }
   .filters input, .filters select { width: 100%; }
   .filters { width: 100%; }

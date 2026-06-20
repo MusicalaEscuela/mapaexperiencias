@@ -21,6 +21,8 @@ const componentEmojis = {
   repertorio: '🎼',
   creativo: '✨'
 };
+const defaultComponentLabels = { ...componentLabels };
+const defaultComponentEmojis = { ...componentEmojis };
 const statusLabels = {
   draft: 'Borrador',
   review: 'En revisión',
@@ -57,6 +59,9 @@ let state = {
   users: [],
   invites: [],
   logs: [],
+  settings: {
+    componentCatalog: {}
+  },
   filters: {
     search: '',
     artId: 'all',
@@ -226,6 +231,42 @@ function skillsByArt(artId) {
   return state.skills.filter(s => artId === 'all' || s.artId === artId);
 }
 
+function componentKeys() {
+  return Object.keys(defaultComponentLabels);
+}
+
+function componentCatalogEntry(key) {
+  return state.settings?.componentCatalog?.[key] || {};
+}
+
+function isComponentActive(key) {
+  return componentCatalogEntry(key).active !== false;
+}
+
+function activeComponentKeys() {
+  return componentKeys().filter(isComponentActive);
+}
+
+function applyComponentCatalog(catalog = {}) {
+  componentKeys().forEach(key => {
+    const item = catalog[key] || {};
+    componentLabels[key] = String(item.label || defaultComponentLabels[key] || key).trim();
+    componentEmojis[key] = String(item.emoji || defaultComponentEmojis[key] || '').trim();
+  });
+}
+
+function currentComponentCatalog() {
+  const catalog = {};
+  componentKeys().forEach(key => {
+    catalog[key] = {
+      label: componentLabels[key] || defaultComponentLabels[key],
+      emoji: componentEmojis[key] || defaultComponentEmojis[key] || '',
+      active: isComponentActive(key)
+    };
+  });
+  return catalog;
+}
+
 // Resuelve los skillRefs de una experiencia contra la biblioteca, descartando saberes borrados.
 function resolveSkillRefs(refs) {
   return (refs || [])
@@ -299,6 +340,8 @@ async function loadData() {
     state.users = data.users || [];
     state.invites = data.invites || [];
     state.logs = data.logs || [];
+    state.settings = data.settings || { componentCatalog: {} };
+    applyComponentCatalog(state.settings.componentCatalog);
     autoSelectFilters();
   } catch (error) {
     console.error(error);
@@ -572,7 +615,7 @@ function renderExperienceCard(exp) {
       </div>
       <p class="muted" style="margin:0">${escapeHtml(exp.objective || exp.description || 'Sin objetivo escrito todavía.')}</p>
       <div class="component-grid">
-        ${Object.keys(componentLabels).map(key => `<div class="component-pill" data-component="${key}"><strong>${componentEmojis[key]} ${componentLabels[key]}</strong><span>${counts[key]} saber(es)</span></div>`).join('')}
+        ${activeComponentKeys().map(key => `<div class="component-pill" data-component="${key}"><strong>${componentEmojis[key]} ${componentLabels[key]}</strong><span>${counts[key]} saber(es)</span></div>`).join('')}
       </div>
       <div class="row-between">
         ${difficultyBadge(exp.difficulty)}
@@ -590,7 +633,7 @@ function libraryArtOptions() {
 }
 
 function componentFilterOptions() {
-  return [`<option value="all">Todos los componentes</option>`, ...Object.entries(componentLabels).map(([key, label]) => `<option value="${key}" ${state.libraryFilters.component === key ? 'selected' : ''}>${componentEmojis[key]} ${label}</option>`)].join('');
+  return [`<option value="all">Todos los componentes</option>`, ...activeComponentKeys().map(key => `<option value="${key}" ${state.libraryFilters.component === key ? 'selected' : ''}>${componentEmojis[key]} ${componentLabels[key]}</option>`)].join('');
 }
 
 function difficultyFilterOptions() {
@@ -616,7 +659,7 @@ function renderLibrary() {
   const skills = filteredSkills();
   const total = state.skills.length;
   const componentsToShow = state.libraryFilters.component === 'all'
-    ? Object.keys(componentLabels)
+    ? activeComponentKeys()
     : [state.libraryFilters.component];
 
   const sections = componentsToShow.map(key => {
@@ -674,13 +717,14 @@ function renderSkillEditor() {
   const d = state.draftSkill;
   const arts = editableArts();
   const artOptions = arts.map(a => `<option value="${a.id}" ${d.artId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('');
-  const componentOptions = Object.entries(componentLabels).map(([key, label]) => `<option value="${key}" ${d.component === key ? 'selected' : ''}>${componentEmojis[key]} ${label}</option>`).join('');
+  const optionKeys = activeComponentKeys().includes(d.component) ? activeComponentKeys() : [d.component, ...activeComponentKeys()];
+  const componentOptions = optionKeys.map(key => `<option value="${key}" ${d.component === key ? 'selected' : ''}>${componentEmojis[key]} ${componentLabels[key]}</option>`).join('');
   const difficultyOptions = Object.entries(difficultyLabels).map(([key, label]) => `<option value="${key}" ${d.difficulty === key ? 'selected' : ''}>${label}</option>`).join('');
   const prereqCandidates = state.skills
     .filter(s => s.artId === d.artId && s.id !== state.editingSkillId)
     .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
   const prereqChecks = prereqCandidates.length
-    ? prereqCandidates.map(s => `<label class="row"><input type="checkbox" data-skill-prereq="${s.id}" ${(d.prerequisites || []).includes(s.id) ? 'checked' : ''} /> ${componentEmojis[s.component] || ''} ${escapeHtml(s.title)}</label>`).join('')
+    ? prereqCandidates.map(s => `<label class="prereq-option"><input type="checkbox" data-skill-prereq="${s.id}" ${(d.prerequisites || []).includes(s.id) ? 'checked' : ''} /><span>${componentEmojis[s.component] || ''} ${escapeHtml(s.title)}</span></label>`).join('')
     : '<span class="muted small">No hay otros saberes en esta arte todavía.</span>';
 
   return `
@@ -702,7 +746,7 @@ function renderSkillEditor() {
       </div>
       <div class="card soft stack">
         <strong>Prerrequisitos (otros saberes de esta arte)</strong>
-        <div class="stack small">${prereqChecks}</div>
+        <div class="prereq-list small">${prereqChecks}</div>
       </div>
       <button class="btn primary full" type="submit">${state.editingSkillId ? 'Guardar cambios' : 'Crear saber'}</button>
     </form>
@@ -794,7 +838,7 @@ function renderBoardSkillCard(skill, source, editable, ref) {
 
 function renderCoverage(exps, route) {
   if (!exps.length) return '';
-  const components = Object.keys(componentLabels);
+  const components = activeComponentKeys();
   const availByComp = {};
   components.forEach(c => { availByComp[c] = skillsByArt(route.artId).filter(s => s.component === c).length; });
 
@@ -1057,7 +1101,7 @@ function renderComponentsEditor() {
     ? resolveSkillRefs(refs).map(({ ref, skill }, index) => renderSkillRefRow(ref, skill, index, refs.length)).join('')
     : `<p class="muted small">Aún no agregas saberes. Elige de la biblioteca de abajo para armar este nivel.</p>`;
 
-  const availableGrouped = Object.keys(componentLabels).map(key => {
+  const availableGrouped = activeComponentKeys().map(key => {
     const items = available.filter(s => s.component === key);
     if (!items.length) return '';
     return `
@@ -1300,6 +1344,45 @@ function renderSettings() {
         <p class="small muted">Estos correos quedan reconocidos como admin en la app y también en las reglas sugeridas de Firestore.</p>
       </section>
     </div>
+    ${hasRole('admin') ? renderComponentCatalogSettings() : ''}
+  `;
+}
+
+function renderComponentCatalogSettings() {
+  return `
+    <section class="card stack" style="margin-top:18px">
+      <div class="row-between">
+        <div>
+          <h2>Componentes de la biblioteca</h2>
+          <p class="small muted" style="margin:4px 0 0">Edita o elimina componentes de la lista que aparece al crear o editar saberes.</p>
+        </div>
+        <button class="btn small" type="button" data-action="reset-component-catalog">Restaurar base</button>
+      </div>
+      <form id="component-catalog-form" class="stack">
+        <div class="component-catalog-grid">
+          ${componentKeys().map(key => `
+            <div class="component-catalog-row ${isComponentActive(key) ? '' : 'is-inactive'}" data-component="${key}">
+              <div>
+                <div class="small muted">${escapeHtml(key)}</div>
+                ${isComponentActive(key) ? '' : '<span class="badge">Eliminado</span>'}
+              </div>
+              <div class="form-field">
+                <label>Icono</label>
+                <input data-component-setting="emoji" data-component-key="${key}" value="${escapeHtml(componentEmojis[key] || '')}" maxlength="4" ${isComponentActive(key) ? '' : 'disabled'} />
+              </div>
+              <div class="form-field">
+                <label>Nombre visible</label>
+                <input data-component-setting="label" data-component-key="${key}" value="${escapeHtml(componentLabels[key] || '')}" ${isComponentActive(key) ? 'required' : 'disabled'} />
+              </div>
+              <button class="btn small ${isComponentActive(key) ? 'danger' : 'teal'}" type="button" data-action="${isComponentActive(key) ? 'delete-component-catalog-item' : 'restore-component-catalog-item'}" data-id="${key}">
+                ${isComponentActive(key) ? 'Eliminar' : 'Reactivar'}
+              </button>
+            </div>
+          `).join('')}
+        </div>
+        <button class="btn primary" type="submit">Guardar componentes</button>
+      </form>
+    </section>
   `;
 }
 
@@ -1405,6 +1488,7 @@ function bindShellEvents() {
   $('#art-form')?.addEventListener('submit', saveArt);
   $('#route-form')?.addEventListener('submit', saveRoute);
   $('#invite-form')?.addEventListener('submit', saveInvite);
+  $('#component-catalog-form')?.addEventListener('submit', saveComponentCatalog);
 }
 
 async function handleAction(event) {
@@ -1436,6 +1520,9 @@ async function handleAction(event) {
     if (action === 'add-resource') addResource();
     if (action === 'remove-resource') removeResource(Number(event.currentTarget.dataset.index));
     if (action === 'export-json') exportJson();
+    if (action === 'delete-component-catalog-item') deleteComponentCatalogItem(id);
+    if (action === 'restore-component-catalog-item') restoreComponentCatalogItem(id);
+    if (action === 'reset-component-catalog') resetComponentCatalog();
     if (action === 'reset-demo') resetDemo();
   } catch (error) {
     console.error(error);
@@ -1538,12 +1625,16 @@ function startNewSkill() {
     return;
   }
   const presetArt = arts.find(a => a.id === state.libraryFilters.artId) || arts[0];
+  const activeComponents = activeComponentKeys();
+  const defaultComponent = activeComponents.includes(state.libraryFilters.component)
+    ? state.libraryFilters.component
+    : (activeComponents[0] || componentKeys()[0]);
   state.view = 'library';
   state.editingSkillId = null;
   state.skillEditorOpen = true;
   state.draftSkill = {
     artId: presetArt.id,
-    component: state.libraryFilters.component !== 'all' ? state.libraryFilters.component : 'tecnica',
+    component: defaultComponent,
     title: '',
     description: '',
     achievement: '',
@@ -1984,6 +2075,71 @@ async function saveInvite(event) {
   render();
 }
 
+async function saveComponentCatalog(event) {
+  event.preventDefault();
+  if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
+  const catalog = {};
+  for (const key of componentKeys()) {
+    const active = isComponentActive(key);
+    const label = $(`[data-component-setting="label"][data-component-key="${key}"]`)?.value.trim();
+    const emoji = $(`[data-component-setting="emoji"][data-component-key="${key}"]`)?.value.trim();
+    if (active && !label) return toast('Todos los componentes activos necesitan nombre visible.', 'error');
+    catalog[key] = {
+      label: active ? label : (componentLabels[key] || defaultComponentLabels[key]),
+      emoji: active ? emoji : (componentEmojis[key] || defaultComponentEmojis[key] || ''),
+      active
+    };
+  }
+  await services.data.saveSettings({ componentCatalog: catalog });
+  await loadData();
+  toast('Componentes actualizados. Ya aparecen así en la biblioteca y en los selectores.');
+  render();
+}
+
+async function deleteComponentCatalogItem(key) {
+  if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
+  if (!componentKeys().includes(key)) return;
+  const used = state.skills.filter(skill => skill.component === key).length;
+  if (used) {
+    return toast(`No se puede eliminar "${componentLabels[key]}" porque ${used} saber(es) todavía lo usan. Cambia esos saberes primero.`, 'error');
+  }
+  if (activeComponentKeys().length <= 1) {
+    return toast('Debe quedar al menos un componente activo.', 'error');
+  }
+  if (!confirm(`¿Eliminar "${componentLabels[key]}" de la lista de componentes?`)) return;
+  const catalog = currentComponentCatalog();
+  catalog[key] = { ...catalog[key], active: false };
+  await services.data.saveSettings({ componentCatalog: catalog });
+  await loadData();
+  if (state.libraryFilters.component === key) state.libraryFilters.component = 'all';
+  toast('Componente eliminado de la lista.');
+  render();
+}
+
+async function restoreComponentCatalogItem(key) {
+  if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
+  if (!componentKeys().includes(key)) return;
+  const catalog = currentComponentCatalog();
+  catalog[key] = { ...catalog[key], active: true };
+  await services.data.saveSettings({ componentCatalog: catalog });
+  await loadData();
+  toast('Componente reactivado.');
+  render();
+}
+
+async function resetComponentCatalog() {
+  if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
+  if (!confirm('¿Restaurar los nombres e iconos base de componentes?')) return;
+  const catalog = {};
+  componentKeys().forEach(key => {
+    catalog[key] = { label: defaultComponentLabels[key], emoji: defaultComponentEmojis[key] || '', active: true };
+  });
+  await services.data.saveSettings({ componentCatalog: catalog });
+  await loadData();
+  toast('Componentes restaurados.');
+  render();
+}
+
 function exportJson() {
   const payload = {
     exportedAt: nowISO(),
@@ -1992,7 +2148,8 @@ function exportJson() {
     experiences: state.experiences,
     skills: state.skills,
     users: hasRole('admin') ? state.users : [],
-    invites: hasRole('admin') ? state.invites : []
+    invites: hasRole('admin') ? state.invites : [],
+    settings: hasRole('admin') ? state.settings : {}
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -2170,9 +2327,14 @@ async function createFirebaseServices() {
     },
     data: {
       async loadAll() {
-        const [arts, routes, skills, logs] = await Promise.all([
-          readCol('arts'), readCol('routes'), readCol('skills'), readCol('changeLogs')
+        const [arts, routes, skills, logs, settingsSnap] = await Promise.all([
+          readCol('arts'),
+          readCol('routes'),
+          readCol('skills'),
+          readCol('changeLogs'),
+          fsMod.getDoc(fsMod.doc(db, 'settings', 'componentCatalog'))
         ]);
+        const componentCatalog = settingsSnap.exists() ? settingsSnap.data().components || {} : {};
         const sortedRoutes = routes.sort((a,b)=>(a.order||0)-(b.order||0));
         const experiences = await readExperiencesForProfile(state.profile, sortedRoutes);
         let users = [], invites = [];
@@ -2186,8 +2348,20 @@ async function createFirebaseServices() {
           skills: skills.sort((a,b)=> (a.title||'').localeCompare(b.title||'')),
           users,
           invites,
-          logs: logs.sort((a,b)=> new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+          logs: logs.sort((a,b)=> new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+          settings: { componentCatalog }
         };
+      },
+      async saveSettings(payload) {
+        if (!state.profile || state.profile.role !== 'admin') throw new Error('Solo admins pueden editar configuración.');
+        const componentCatalog = payload.componentCatalog || {};
+        await fsMod.setDoc(fsMod.doc(db, 'settings', 'componentCatalog'), {
+          components: componentCatalog,
+          updatedAt: nowISO(),
+          updatedBy: state.user.uid,
+          updatedByEmail: state.user.email
+        }, { merge: true });
+        await logChange({ action: 'update', entityType: 'settings', entityId: 'componentCatalog', summary: 'Componentes de biblioteca actualizados', after: componentCatalog });
       },
       async saveSkill(payload) {
         const { id, ...data } = payload;
@@ -2272,9 +2446,10 @@ function createDemoServices() {
     if (raw) {
       const parsed = JSON.parse(raw);
       parsed.skills ||= []; // Compatibilidad con DBs demo previas a la biblioteca.
+      parsed.settings ||= { componentCatalog: {} };
       return parsed;
     }
-    const initial = { users: [], invites: [], arts: [], routes: [], experiences: [], skills: [], changeLogs: [] };
+    const initial = { users: [], invites: [], arts: [], routes: [], experiences: [], skills: [], changeLogs: [], settings: { componentCatalog: {} } };
     localStorage.setItem(storageKey, JSON.stringify(initial));
     return initial;
   }
@@ -2332,8 +2507,15 @@ function createDemoServices() {
           skills: db.skills,
           users: db.users,
           invites: db.invites,
-          logs: db.changeLogs.sort((a,b)=> new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+          logs: db.changeLogs.sort((a,b)=> new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+          settings: db.settings || { componentCatalog: {} }
         };
+      },
+      async saveSettings(payload) {
+        if (!hasRole('admin')) throw new Error('Solo admins pueden editar configuración.');
+        db.settings = { ...(db.settings || {}), componentCatalog: payload.componentCatalog || {} };
+        logChange({ action: 'update', entityType: 'settings', entityId: 'componentCatalog', summary: 'Componentes de biblioteca actualizados', after: db.settings.componentCatalog });
+        saveDB();
       },
       async saveSkill(payload) {
         if (payload.id) {

@@ -123,6 +123,12 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    match /settings/{settingId} {
+      allow read: if isActive();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
