@@ -2274,26 +2274,40 @@ async function saveComponentCatalog(event) {
 async function saveCategoryCatalogItem(event) {
   event.preventDefault();
   if (!hasRole('admin')) return toast('Solo admins pueden editar categorías.', 'error');
-  const fd = new FormData(event.currentTarget);
+  const form = event.currentTarget;
+  const submit = form.querySelector('button[type="submit"]');
+  const originalText = submit?.textContent || 'Agregar categoría';
+  if (submit) {
+    submit.disabled = true;
+    submit.textContent = 'Guardando...';
+  }
+  const fd = new FormData(form);
   const component = fd.get('component');
   const name = cleanCategory(fd.get('name'));
-  if (!componentKeys().includes(component)) return toast('Elige un componente válido.', 'error');
-  if (!name) return toast('Escribe el nombre de la categoría.', 'error');
+  try {
+    if (!componentKeys().includes(component)) return toast('Elige un componente válido.', 'error');
+    if (!name) return toast('Escribe el nombre de la categoría.', 'error');
 
-  const catalog = normalizeCategoryCatalog(state.settings.categoryCatalog || []);
-  const existing = catalog.find(item => item.component === component && duplicateKey(item.name) === duplicateKey(name));
-  if (existing) {
-    existing.name = name;
-    existing.active = true;
-  } else {
-    catalog.push({ id: uid('cat'), component, name, active: true });
+    const catalog = normalizeCategoryCatalog(state.settings.categoryCatalog || []);
+    const existing = catalog.find(item => item.component === component && duplicateKey(item.name) === duplicateKey(name));
+    if (existing) {
+      existing.name = name;
+      existing.active = true;
+    } else {
+      catalog.push({ id: uid('cat'), component, name, active: true });
+    }
+
+    await services.data.saveSettings({ categoryCatalog: catalog });
+    state.settings = { ...(state.settings || {}), categoryCatalog: catalog };
+    form.reset();
+    toast('Categoría guardada. Ya aparece en la lista y en el desplegable de saberes.');
+    render();
+  } finally {
+    if (submit) {
+      submit.disabled = false;
+      submit.textContent = originalText;
+    }
   }
-
-  await services.data.saveSettings({ categoryCatalog: catalog });
-  await loadData();
-  event.currentTarget.reset();
-  toast('Categoría guardada. Ya aparece en el desplegable de saberes.');
-  render();
 }
 
 async function deleteCategoryCatalogItem(component, name) {
@@ -2310,7 +2324,7 @@ async function deleteCategoryCatalogItem(component, name) {
   if (item) item.active = false;
   else catalog.push({ id: uid('cat'), component, name: normalizedName, active: false });
   await services.data.saveSettings({ categoryCatalog: catalog });
-  await loadData();
+  state.settings = { ...(state.settings || {}), categoryCatalog: catalog };
   if (state.libraryFilters.category === normalizedName) state.libraryFilters.category = 'all';
   toast('Categoría eliminada del desplegable.');
   render();
@@ -2325,7 +2339,7 @@ async function restoreCategoryCatalogItem(component, name) {
   if (item) item.active = true;
   else catalog.push({ id: uid('cat'), component, name: normalizedName, active: true });
   await services.data.saveSettings({ categoryCatalog: catalog });
-  await loadData();
+  state.settings = { ...(state.settings || {}), categoryCatalog: catalog };
   toast('Categoría reactivada.');
   render();
 }
