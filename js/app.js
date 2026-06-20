@@ -72,6 +72,7 @@ let state = {
   libraryFilters: {
     search: '',
     artId: 'all',
+    routeId: 'all',
     component: 'all',
     category: 'all',
     difficulty: 'all'
@@ -174,6 +175,14 @@ function activeCategoriesForComponent(component, current = '') {
     .filter(item => item.component === component)
     .filter(item => item.active || duplicateKey(item.name) === currentKey);
   return items.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function prerequisiteClosure(skillId, seen = new Set()) {
+  if (!skillId || seen.has(skillId)) return [];
+  seen.add(skillId);
+  const skill = getSkill(skillId);
+  if (!skill) return [];
+  return (skill.prerequisites || []).flatMap(id => [id, ...prerequisiteClosure(id, seen)]);
 }
 
 function hasDuplicateIn(items, value, field, currentId = null, scope = () => true) {
@@ -285,6 +294,27 @@ function editableArts() {
 
 function skillsByArt(artId) {
   return state.skills.filter(s => artId === 'all' || s.artId === artId);
+}
+
+function skillRouteIds(skill) {
+  return Array.isArray(skill?.routeIds) ? skill.routeIds.filter(Boolean) : [];
+}
+
+function skillAppliesToRoute(skill, routeId) {
+  if (!routeId || routeId === 'all') return true;
+  const routeIds = skillRouteIds(skill);
+  return routeIds.includes(routeId);
+}
+
+function skillsByRoute(route) {
+  if (!route) return [];
+  return skillsByArt(route.artId).filter(skill => skillAppliesToRoute(skill, route.id));
+}
+
+function skillRouteLabels(skill) {
+  const routeIds = skillRouteIds(skill);
+  if (!routeIds.length) return ['Sin ruta asignada'];
+  return routeIds.map(id => getRoute(id)?.name).filter(Boolean);
 }
 
 function componentKeys() {
@@ -688,6 +718,11 @@ function libraryArtOptions() {
   return [`<option value="all">Todas las artes</option>`, ...state.arts.map(a => `<option value="${a.id}" ${state.libraryFilters.artId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`)].join('');
 }
 
+function libraryRouteOptions() {
+  const routes = routesByArt(state.libraryFilters.artId);
+  return [`<option value="all">Todas las rutas</option>`, ...routes.map(route => `<option value="${route.id}" ${state.libraryFilters.routeId === route.id ? 'selected' : ''}>${escapeHtml(route.name)}</option>`)].join('');
+}
+
 function componentFilterOptions() {
   return [`<option value="all">Todos los componentes</option>`, ...activeComponentKeys().map(key => `<option value="${key}" ${state.libraryFilters.component === key ? 'selected' : ''}>${componentEmojis[key]} ${componentLabels[key]}</option>`)].join('');
 }
@@ -711,12 +746,13 @@ function filteredSkills() {
   const search = (f.search || '').trim().toLowerCase();
   return state.skills
     .filter(s => f.artId === 'all' || s.artId === f.artId)
+    .filter(s => f.routeId === 'all' || skillAppliesToRoute(s, f.routeId))
     .filter(s => f.component === 'all' || s.component === f.component)
     .filter(s => f.category === 'all' || skillCategory(s) === f.category)
     .filter(s => f.difficulty === 'all' || s.difficulty === f.difficulty)
     .filter(s => {
       if (!search) return true;
-      const haystack = [s.title, s.category, s.description, s.achievement, (s.tags || []).join(' '), getArt(s.artId)?.name].join(' ').toLowerCase();
+      const haystack = [s.title, s.category, s.description, s.achievement, (s.tags || []).join(' '), getArt(s.artId)?.name, skillRouteLabels(s).join(' ')].join(' ').toLowerCase();
       return haystack.includes(search);
     });
 }
@@ -766,6 +802,7 @@ function renderLibrary() {
         <div class="filters">
           <input type="search" placeholder="Buscar saber..." value="${escapeHtml(state.libraryFilters.search)}" data-library-filter="search" />
           <select data-library-filter="artId">${libraryArtOptions()}</select>
+          <select data-library-filter="routeId">${libraryRouteOptions()}</select>
           <select data-library-filter="component">${componentFilterOptions()}</select>
           <select data-library-filter="category">${categoryFilterOptions()}</select>
           <select data-library-filter="difficulty">${difficultyFilterOptions()}</select>
@@ -785,6 +822,7 @@ function renderSkillCard(skill) {
   const isExpanded = state.expandedSkillIds.has(skill.id);
   const hasDetails = Boolean(skill.description || skill.achievement || tags.length || prereqs.length);
   const category = skillCategory(skill);
+  const routes = skillRouteLabels(skill);
   return `
     <article class="experience-card skill-card compact ${isExpanded ? 'is-expanded' : ''}" data-component="${skill.component}" data-skill-id="${skill.id}">
       <div class="skill-card-main">
@@ -798,6 +836,7 @@ function renderSkillCard(skill) {
         <div class="skill-card-details">
           ${skill.description ? `<p class="muted">${escapeHtml(skill.description)}</p>` : ''}
           ${skill.achievement ? `<p class="small muted"><strong>Logro:</strong> ${escapeHtml(skill.achievement)}</p>` : ''}
+          <p class="small muted"><strong>Rutas:</strong> ${routes.map(escapeHtml).join(', ')}</p>
           ${tags.length ? `<div class="row small muted">${tags.map(t => `<span class="badge">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
           ${prereqs.length ? `<p class="small muted">↳ Requiere: ${prereqs.map(escapeHtml).join(', ')}</p>` : ''}
         </div>
@@ -814,6 +853,11 @@ function renderSkillEditor() {
   const d = state.draftSkill;
   const arts = editableArts();
   const artOptions = arts.map(a => `<option value="${a.id}" ${d.artId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('');
+  const routeChoices = routesByArt(d.artId).filter(route => canEditRoute(route.id, route.artId));
+  const selectedRouteIds = new Set(d.routeIds || []);
+  const routeChecks = routeChoices.length
+    ? routeChoices.map(route => `<label class="prereq-option"><input type="checkbox" data-skill-route="${route.id}" ${selectedRouteIds.has(route.id) ? 'checked' : ''} /><span>${escapeHtml(route.name)}</span></label>`).join('')
+    : '<span class="muted small">Crea rutas para esta arte antes de asignar el saber.</span>';
   const optionKeys = activeComponentKeys().includes(d.component) ? activeComponentKeys() : [d.component, ...activeComponentKeys()];
   const componentOptions = optionKeys.map(key => `<option value="${key}" ${d.component === key ? 'selected' : ''}>${componentEmojis[key]} ${componentLabels[key]}</option>`).join('');
   const categoryOptions = [
@@ -823,11 +867,16 @@ function renderSkillEditor() {
   ].join('');
   const difficultyOptions = Object.entries(difficultyLabels).map(([key, label]) => `<option value="${key}" ${d.difficulty === key ? 'selected' : ''}>${label}</option>`).join('');
   const prereqCandidates = state.skills
-    .filter(s => s.artId === d.artId && s.id !== state.editingSkillId)
+    .filter(s => s.artId === d.artId && s.component === d.component && skillCategory(s) === cleanCategory(d.category) && s.id !== state.editingSkillId)
+    .filter(s => {
+      const selectedRoutes = d.routeIds || [];
+      const candidateRoutes = skillRouteIds(s);
+      return !selectedRoutes.length || candidateRoutes.some(id => selectedRoutes.includes(id));
+    })
     .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
   const prereqChecks = prereqCandidates.length
     ? prereqCandidates.map(s => `<label class="prereq-option"><input type="checkbox" data-skill-prereq="${s.id}" ${(d.prerequisites || []).includes(s.id) ? 'checked' : ''} /><span>${componentEmojis[s.component] || ''} ${escapeHtml(s.title)}</span></label>`).join('')
-    : '<span class="muted small">No hay otros saberes en esta arte todavía.</span>';
+    : `<span class="muted small">${cleanCategory(d.category) ? 'No hay otros saberes en esta categoría todavía.' : 'Elige una categoría para ver prerrequisitos de esa rama.'}</span>`;
 
   return `
     <form id="skill-form" class="stack">
@@ -838,6 +887,11 @@ function renderSkillEditor() {
       <div class="grid cols-2">
         <div class="form-field"><label>Arte</label><select data-skill="artId">${artOptions}</select></div>
         <div class="form-field"><label>Componente</label><select data-skill="component">${componentOptions}</select></div>
+      </div>
+      <div class="card soft stack">
+        <strong>Rutas / instrumentos donde aplica</strong>
+        <p class="small muted" style="margin:0">Marca solo los instrumentos que trabajan este saber. Si no lo marcas para una ruta, no aparecerá en su tablero.</p>
+        <div class="prereq-list small">${routeChecks}</div>
       </div>
       <div class="form-field">
         <label>Categoría</label>
@@ -852,6 +906,7 @@ function renderSkillEditor() {
       </div>
       <div class="card soft stack">
         <strong>Prerrequisitos (otros saberes de esta arte)</strong>
+        <p class="small muted" style="margin:0">Solo se muestran saberes de la misma categoría. Si marcas un saber que ya tiene prerrequisitos, la cadena anterior se agrega automáticamente.</p>
         <div class="prereq-list small">${prereqChecks}</div>
       </div>
       <button class="btn primary full" type="submit">${state.editingSkillId ? 'Guardar cambios' : 'Crear saber'}</button>
@@ -867,7 +922,7 @@ function boardData(route) {
   const exps = experiencesByRoute(route.id).filter(canSeeExperience);
   const assigned = new Set();
   exps.forEach(e => (e.skillRefs || []).forEach(r => assigned.add(r.skillId)));
-  const unassigned = skillsByArt(route.artId)
+  const unassigned = skillsByRoute(route)
     .filter(s => !assigned.has(s.id))
     .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
   return { exps, unassigned };
@@ -947,7 +1002,7 @@ function renderCoverage(exps, route) {
   if (!exps.length) return '';
   const components = activeComponentKeys();
   const availByComp = {};
-  components.forEach(c => { availByComp[c] = skillsByArt(route.artId).filter(s => s.component === c).length; });
+  components.forEach(c => { availByComp[c] = skillsByRoute(route).filter(s => s.component === c).length; });
 
   const headRow = `<tr><th>Nivel</th>${components.map(c => `<th data-component="${c}" style="text-align:center">${componentEmojis[c]} ${componentLabels[c]}</th>`).join('')}<th style="text-align:center">Total</th></tr>`;
 
@@ -1202,7 +1257,8 @@ function renderComponentsEditor() {
   const d = state.draftExperience;
   const refs = d.skillRefs || [];
   const usedIds = new Set(refs.map(r => r.skillId));
-  const available = skillsByArt(d.artId).filter(s => !usedIds.has(s.id));
+  const route = getRoute(d.routeId);
+  const available = (route ? skillsByRoute(route) : skillsByArt(d.artId)).filter(s => !usedIds.has(s.id));
 
   const selected = refs.length
     ? resolveSkillRefs(refs).map(({ ref, skill }, index) => renderSkillRefRow(ref, skill, index, refs.length)).join('')
@@ -1233,7 +1289,7 @@ function renderComponentsEditor() {
     ? `<p class="muted small">Elige primero un arte arriba.</p>`
     : (available.length
       ? availableGrouped
-      : `<p class="muted small">No hay más saberes disponibles en esta arte. ${skillsByArt(d.artId).length ? 'Ya los agregaste todos.' : 'Crea saberes en la <strong>Biblioteca</strong> primero.'}</p>`);
+      : `<p class="muted small">No hay más saberes disponibles para esta ruta. ${(route ? skillsByRoute(route) : skillsByArt(d.artId)).length ? 'Ya los agregaste todos.' : 'Crea saberes en la <strong>Biblioteca</strong> primero y asígnalos a esta ruta.'}</p>`);
 
   return `
     <section class="card stack">
@@ -1610,6 +1666,7 @@ function bindShellEvents() {
   $$('[data-library-filter]').forEach(el => el.addEventListener('change', handleLibraryFilter));
   $$('[data-skill]').forEach(el => el.addEventListener('input', handleSkillDraftChange));
   $$('[data-skill]').forEach(el => el.addEventListener('change', handleSkillDraftChange));
+  $$('[data-skill-route]').forEach(el => el.addEventListener('change', handleSkillRouteToggle));
   $$('[data-skill-prereq]').forEach(el => el.addEventListener('change', handleSkillPrereqToggle));
   $$('[data-draft]').forEach(el => {
     el.addEventListener('input', handleDraftChange);
@@ -1714,6 +1771,7 @@ function handleLibraryFilter(event) {
   const isSearch = key === 'search';
   const active = document.activeElement;
   state.libraryFilters[key] = event.currentTarget.value;
+  if (key === 'artId') state.libraryFilters.routeId = 'all';
   if (key === 'artId' || key === 'component') state.libraryFilters.category = 'all';
   render();
   // Mantener el foco y el cursor en el buscador tras re-render.
@@ -1800,6 +1858,7 @@ function startNewSkill() {
   state.skillEditorOpen = true;
   state.draftSkill = {
     artId: presetArt.id,
+    routeIds: state.libraryFilters.routeId !== 'all' && getRoute(state.libraryFilters.routeId)?.artId === presetArt.id ? [state.libraryFilters.routeId] : [],
     component: defaultComponent,
     category: '',
     title: '',
@@ -1821,6 +1880,7 @@ function startEditSkill(id) {
   state.skillEditorOpen = true;
   state.draftSkill = {
     artId: skill.artId,
+    routeIds: [...skillRouteIds(skill)],
     component: skill.component || 'tecnica',
     category: skill.category || '',
     title: skill.title || '',
@@ -1847,21 +1907,54 @@ function handleSkillDraftChange(event) {
     // Los prerrequisitos son saberes de la misma arte; al cambiar, descarto los que ya no aplican.
     state.draftSkill.prerequisites = (state.draftSkill.prerequisites || [])
       .filter(id => getSkill(id)?.artId === event.currentTarget.value);
+    state.draftSkill.routeIds = (state.draftSkill.routeIds || [])
+      .filter(id => getRoute(id)?.artId === event.currentTarget.value);
     state.draftSkill.category = '';
     render();
   }
   if (key === 'component') {
     state.draftSkill.category = '';
+    state.draftSkill.prerequisites = [];
     render();
   }
+  if (key === 'category') {
+    state.draftSkill.prerequisites = (state.draftSkill.prerequisites || [])
+      .filter(id => {
+        const skill = getSkill(id);
+        return skill?.artId === state.draftSkill.artId &&
+          skill.component === state.draftSkill.component &&
+          skillCategory(skill) === cleanCategory(state.draftSkill.category);
+      });
+    render();
+  }
+}
+
+function handleSkillRouteToggle(event) {
+  const id = event.currentTarget.dataset.skillRoute;
+  const set = new Set(state.draftSkill.routeIds || []);
+  if (event.currentTarget.checked) set.add(id);
+  else set.delete(id);
+  state.draftSkill.routeIds = [...set];
+  state.draftSkill.prerequisites = (state.draftSkill.prerequisites || [])
+    .filter(prereqId => {
+      const skill = getSkill(prereqId);
+      if (!skill) return false;
+      const routeIds = skillRouteIds(skill);
+      return routeIds.some(routeId => set.has(routeId));
+    });
+  render();
 }
 
 function handleSkillPrereqToggle(event) {
   const id = event.currentTarget.dataset.skillPrereq;
   const set = new Set(state.draftSkill.prerequisites || []);
-  if (event.currentTarget.checked) set.add(id);
+  if (event.currentTarget.checked) {
+    set.add(id);
+    prerequisiteClosure(id).forEach(prereqId => set.add(prereqId));
+  }
   else set.delete(id);
   state.draftSkill.prerequisites = [...set];
+  render();
 }
 
 async function saveSkill(event) {
@@ -1869,6 +1962,7 @@ async function saveSkill(event) {
   const d = state.draftSkill;
   if (!canEditArt(d.artId)) return toast('No tienes permiso para guardar en esta arte.', 'error');
   if (!d.title.trim()) return toast('Ponle título al saber. Hasta una escala merece nombre.', 'error');
+  if (!(d.routeIds || []).length) return toast('Elige al menos una ruta o instrumento para este saber.', 'error');
   if (!cleanCategory(d.category)) return toast('Elige una categoría. Si no aparece, créala primero en Configuración.', 'error');
   if (hasDuplicateIn(state.skills, d.title, 'title', state.editingSkillId, skill => skill.artId === d.artId)) {
     return toast('Ya existe un saber con ese título en esta arte.', 'error');
@@ -1876,6 +1970,7 @@ async function saveSkill(event) {
   const tags = (d.tagsText || '').split(',').map(t => t.trim()).filter(Boolean);
   const payload = {
     artId: d.artId,
+    routeIds: [...new Set(d.routeIds || [])].filter(id => getRoute(id)?.artId === d.artId),
     component: d.component,
     category: cleanCategory(d.category),
     title: d.title.trim(),
@@ -1883,7 +1978,7 @@ async function saveSkill(event) {
     achievement: (d.achievement || '').trim(),
     difficulty: d.difficulty,
     tags,
-    prerequisites: d.prerequisites || [],
+    prerequisites: [...new Set(d.prerequisites || [])].filter(id => id && id !== state.editingSkillId && getSkill(id)),
     updatedAt: nowISO(),
     updatedBy: state.user.uid,
     updatedByEmail: state.user.email
