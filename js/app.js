@@ -71,6 +71,8 @@ let state = {
   },
   selectedArtId: 'all',
   selectedRouteId: 'all',
+  editingArtId: null,
+  editingRouteId: null,
   editingExperienceId: null,
   draftExperience: null,
   skillEditorOpen: false,
@@ -103,6 +105,38 @@ function slugify(value) {
     .trim()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '') || uid('slug');
+}
+
+function duplicateKey(value) {
+  return String(value ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function hasDuplicateIn(items, value, field, currentId = null, scope = () => true) {
+  const key = duplicateKey(value);
+  if (!key) return false;
+  return items.some(item => item.id !== currentId && scope(item) && duplicateKey(item[field]) === key);
+}
+
+function firstDuplicateResource(resources) {
+  const seenTitles = new Set();
+  const seenUrls = new Set();
+  for (const resource of resources) {
+    const title = duplicateKey(resource.title);
+    const url = duplicateKey(resource.url);
+    if (title) {
+      if (seenTitles.has(title)) return 'Hay dos recursos con el mismo título en esta experiencia.';
+      seenTitles.add(title);
+    }
+    if (url) {
+      if (seenUrls.has(url)) return 'Hay dos recursos con la misma URL en esta experiencia.';
+      seenUrls.add(url);
+    }
+  }
+  return '';
 }
 
 function nowISO() {
@@ -544,7 +578,7 @@ function renderExperienceCard(exp) {
         ${difficultyBadge(exp.difficulty)}
         <div class="row">
           <button class="btn small" data-action="view-experience" data-id="${exp.id}">Ver</button>
-          ${canEditExperience(exp) ? `<button class="btn small teal" data-action="edit-experience" data-id="${exp.id}">Editar</button>` : ''}
+          ${canEditExperience(exp) ? `<button class="btn small teal" data-action="edit-experience" data-id="${exp.id}">Editar</button><button class="btn small danger" data-action="delete-experience" data-id="${exp.id}">Eliminar</button>` : ''}
         </div>
       </div>
     </article>
@@ -1152,25 +1186,33 @@ function renderCompareCell(items) {
 
 function renderStructure() {
   if (!hasRole('admin')) return renderNoAccess();
+  const editingArt = state.editingArtId ? getArt(state.editingArtId) : null;
+  const editingRoute = state.editingRouteId ? getRoute(state.editingRouteId) : null;
   return `
     <div class="grid cols-2">
       <section class="card stack">
-        <h2>Crear arte</h2>
+        <div class="row-between">
+          <h2>${editingArt ? 'Editar arte' : 'Crear arte'}</h2>
+          ${editingArt ? `<button class="btn small ghost" type="button" data-action="cancel-art-editor">Cancelar</button>` : ''}
+        </div>
         <form id="art-form" class="stack">
-          <div class="form-field"><label>Nombre del arte</label><input name="name" required placeholder="Música, Danza, Teatro..." /></div>
-          <div class="form-field"><label>Descripción</label><textarea name="description" placeholder="Descripción breve"></textarea></div>
-          <div class="form-field"><label>Orden</label><input name="order" type="number" min="1" value="${state.arts.length + 1}" /></div>
-          <button class="btn primary" type="submit">Crear arte</button>
+          <div class="form-field"><label>Nombre del arte</label><input name="name" required placeholder="Música, Danza, Teatro..." value="${escapeHtml(editingArt?.name || '')}" /></div>
+          <div class="form-field"><label>Descripción</label><textarea name="description" placeholder="Descripción breve">${escapeHtml(editingArt?.description || '')}</textarea></div>
+          <div class="form-field"><label>Orden</label><input name="order" type="number" min="1" value="${escapeHtml(editingArt?.order || state.arts.length + 1)}" /><p class="small muted" style="margin:0">Define en qué posición aparece esta arte en menús y listados. 1 aparece primero.</p></div>
+          <button class="btn primary" type="submit">${editingArt ? 'Guardar cambios' : 'Crear arte'}</button>
         </form>
       </section>
       <section class="card stack">
-        <h2>Crear ruta</h2>
+        <div class="row-between">
+          <h2>${editingRoute ? 'Editar ruta' : 'Crear ruta'}</h2>
+          ${editingRoute ? `<button class="btn small ghost" type="button" data-action="cancel-route-editor">Cancelar</button>` : ''}
+        </div>
         <form id="route-form" class="stack">
-          <div class="form-field"><label>Arte</label><select name="artId" required>${state.arts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}</select></div>
-          <div class="form-field"><label>Nombre de la ruta</label><input name="name" required placeholder="Piano, Guitarra, Dibujo..." /></div>
-          <div class="form-field"><label>Descripción</label><textarea name="description" placeholder="Descripción breve"></textarea></div>
-          <div class="form-field"><label>Orden</label><input name="order" type="number" min="1" value="${state.routes.length + 1}" /></div>
-          <button class="btn teal" type="submit">Crear ruta</button>
+          <div class="form-field"><label>Arte</label><select name="artId" required>${state.arts.map(a => `<option value="${a.id}" ${editingRoute?.artId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('')}</select></div>
+          <div class="form-field"><label>Nombre de la ruta</label><input name="name" required placeholder="Piano, Guitarra, Dibujo..." value="${escapeHtml(editingRoute?.name || '')}" /></div>
+          <div class="form-field"><label>Descripción</label><textarea name="description" placeholder="Descripción breve">${escapeHtml(editingRoute?.description || '')}</textarea></div>
+          <div class="form-field"><label>Orden</label><input name="order" type="number" min="1" value="${escapeHtml(editingRoute?.order || state.routes.length + 1)}" /><p class="small muted" style="margin:0">Define en qué posición aparece esta ruta dentro del arte. 1 aparece primero.</p></div>
+          <button class="btn teal" type="submit">${editingRoute ? 'Guardar cambios' : 'Crear ruta'}</button>
         </form>
       </section>
     </div>
@@ -1180,15 +1222,18 @@ function renderStructure() {
         <div class="card soft" style="margin-top:12px">
           <div class="row-between">
             <div><h3>${escapeHtml(a.name)}</h3><p class="muted" style="margin:0">${escapeHtml(a.description || 'Sin descripción')}</p></div>
-            <span class="badge">Orden ${escapeHtml(a.order || 0)}</span>
+            <div class="row">
+              <span class="badge">Orden ${escapeHtml(a.order || 0)}</span>
+              <button class="btn small" type="button" data-action="edit-art" data-id="${a.id}">Editar</button>
+              <button class="btn small danger" type="button" data-action="delete-art" data-id="${a.id}">Eliminar</button>
+            </div>
           </div>
-          <div class="grid cols-3" style="margin-top:12px">${state.routes.filter(r => r.artId === a.id).sort((x,y)=>(x.order||0)-(y.order||0)).map(r => `<div class="stat-card"><div class="strong">${escapeHtml(r.name)}</div><div class="small muted">${escapeHtml(r.description || 'Sin descripción')}</div><div class="small muted" style="margin-top:8px">${experiencesByRoute(r.id).length} experiencia(s)</div></div>`).join('') || '<p class="muted">Sin rutas todavía.</p>'}</div>
+          <div class="grid cols-3" style="margin-top:12px">${state.routes.filter(r => r.artId === a.id).sort((x,y)=>(x.order||0)-(y.order||0)).map(r => `<div class="stat-card stack"><div class="row-between"><div><div class="strong">${escapeHtml(r.name)}</div><div class="small muted">${escapeHtml(r.description || 'Sin descripción')}</div></div><span class="badge">Orden ${escapeHtml(r.order || 0)}</span></div><div class="small muted">${experiencesByRoute(r.id).length} experiencia(s)</div><div class="row"><button class="btn small" type="button" data-action="edit-route" data-id="${r.id}">Editar</button><button class="btn small danger" type="button" data-action="delete-route" data-id="${r.id}">Eliminar</button></div></div>`).join('') || '<p class="muted">Sin rutas todavía.</p>'}</div>
         </div>
       `).join('') : renderEmpty('No hay artes creadas.')}
     </section>
   `;
 }
-
 function renderTeachers() {
   if (!hasRole('admin')) return renderNoAccess();
   const artChecks = state.arts.map(a => `<label class="row"><input type="checkbox" name="allowedArts" value="${a.id}" /> ${escapeHtml(a.name)}</label>`).join('');
@@ -1371,12 +1416,19 @@ async function handleAction(event) {
     if (action === 'logout') await services.auth.logout();
     if (action === 'new-experience') startNewExperience(routeId);
     if (action === 'edit-experience') startEditExperience(id);
+    if (action === 'delete-experience') await deleteExperience(id);
     if (action === 'view-experience') { state.modal = { type: 'experience', id }; render(); }
     if (action === 'close-modal') { state.modal = null; render(); }
     if (action === 'cancel-editor') { state.draftExperience = null; state.editingExperienceId = null; render(); }
     if (action === 'new-skill') startNewSkill();
     if (action === 'edit-skill') startEditSkill(id);
     if (action === 'delete-skill') await deleteSkill(id);
+    if (action === 'edit-art') startEditArt(id);
+    if (action === 'delete-art') await deleteArt(id);
+    if (action === 'cancel-art-editor') cancelArtEditor();
+    if (action === 'edit-route') startEditRoute(id);
+    if (action === 'delete-route') await deleteRoute(id);
+    if (action === 'cancel-route-editor') cancelRouteEditor();
     if (action === 'cancel-skill-editor') cancelSkillEditor();
     if (action === 'add-skill-ref') addSkillRef(id);
     if (action === 'remove-skill-ref') removeSkillRef(id);
@@ -1462,6 +1514,23 @@ function startEditExperience(id) {
   render();
 }
 
+async function deleteExperience(id) {
+  const exp = getExperience(id);
+  if (!exp) return;
+  if (!canEditExperience(exp)) return toast('No tienes permiso para eliminar esta experiencia.', 'error');
+  const label = `${exp.label || 'Experiencia'} ${exp.name || ''}`.trim();
+  if (!confirm(`¿Eliminar "${label}"? Esto también quitará sus saberes y recursos asociados a esta experiencia.`)) return;
+  await services.data.deleteExperience(id, exp);
+  await loadData();
+  if (state.editingExperienceId === id) {
+    state.editingExperienceId = null;
+    state.draftExperience = null;
+  }
+  state.modal = null;
+  toast('Experiencia eliminada. Ya puedes liberar esa ruta o arte si no tiene más conexiones.');
+  render();
+}
+
 function startNewSkill() {
   const arts = editableArts();
   if (!arts.length) {
@@ -1536,6 +1605,9 @@ async function saveSkill(event) {
   const d = state.draftSkill;
   if (!canEditArt(d.artId)) return toast('No tienes permiso para guardar en esta arte.', 'error');
   if (!d.title.trim()) return toast('Ponle título al saber. Hasta una escala merece nombre.', 'error');
+  if (hasDuplicateIn(state.skills, d.title, 'title', state.editingSkillId, skill => skill.artId === d.artId)) {
+    return toast('Ya existe un saber con ese título en esta arte.', 'error');
+  }
   const tags = (d.tagsText || '').split(',').map(t => t.trim()).filter(Boolean);
   const payload = {
     artId: d.artId,
@@ -1632,11 +1704,20 @@ function handleSkillRefNote(event) {
 function boardExpPayload(exp, refs) {
   return {
     ...exp,
-    skillRefs: refs,
+    skillRefs: uniqueSkillRefs(refs),
     updatedAt: nowISO(),
     updatedBy: state.user.uid,
     updatedByEmail: state.user.email
   };
+}
+
+function uniqueSkillRefs(refs = []) {
+  const seen = new Set();
+  return refs.filter(ref => {
+    if (!ref?.skillId || seen.has(ref.skillId)) return false;
+    seen.add(ref.skillId);
+    return true;
+  });
 }
 
 async function handleBoardDrop(target) {
@@ -1689,6 +1770,17 @@ async function saveExperience(event) {
   const d = state.draftExperience;
   if (!canEditRoute(d.routeId, d.artId)) return toast('No tienes permiso para guardar en esta ruta.', 'error');
   if (!d.name.trim()) return toast('Ponle nombre a la experiencia. Hasta las escalas merecen identidad.', 'error');
+  if (hasDuplicateIn(state.experiences, d.name, 'name', state.editingExperienceId, exp => exp.routeId === d.routeId && exp.status !== 'archived')) {
+    return toast('Ya existe una experiencia con ese nombre en esta ruta.', 'error');
+  }
+  if (hasDuplicateIn(state.experiences, d.label, 'label', state.editingExperienceId, exp => exp.routeId === d.routeId && exp.status !== 'archived')) {
+    return toast('Ya existe una experiencia con esa etiqueta o nivel en esta ruta.', 'error');
+  }
+  const resources = (d.resources || [])
+    .filter(r => r.title || r.url)
+    .map(r => ({ ...r, title: (r.title || '').trim(), url: (r.url || '').trim(), description: (r.description || '').trim() }));
+  const duplicateResourceMessage = firstDuplicateResource(resources);
+  if (duplicateResourceMessage) return toast(duplicateResourceMessage, 'error');
   const payload = {
     ...d,
     name: d.name.trim(),
@@ -1698,10 +1790,10 @@ async function saveExperience(event) {
     updatedBy: state.user.uid,
     updatedByEmail: state.user.email,
     components: normalizeComponents(d.components),
-    skillRefs: (d.skillRefs || [])
+    skillRefs: uniqueSkillRefs(d.skillRefs || [])
       .filter(r => getSkill(r.skillId))
       .map(r => ({ skillId: r.skillId, note: (r.note || '').trim() })),
-    resources: (d.resources || []).filter(r => r.title || r.url)
+    resources
   };
   if (!payload.id) {
     payload.createdAt = nowISO();
@@ -1727,42 +1819,135 @@ function normalizeComponents(components) {
   return out;
 }
 
+function startEditArt(id) {
+  if (!hasRole('admin')) return toast('No tienes permiso para editar artes.', 'error');
+  if (!getArt(id)) return toast('No encontré esa arte.', 'error');
+  state.editingArtId = id;
+  state.editingRouteId = null;
+  render();
+}
+
+function cancelArtEditor() {
+  state.editingArtId = null;
+  render();
+}
+
+async function deleteArt(id) {
+  if (!hasRole('admin')) return toast('No tienes permiso para eliminar artes.', 'error');
+  const art = getArt(id);
+  if (!art) return;
+  const routes = state.routes.filter(r => r.artId === id);
+  const skills = state.skills.filter(s => s.artId === id);
+  const experiences = state.experiences.filter(e => e.artId === id && e.status !== 'archived');
+  if (routes.length || skills.length || experiences.length) {
+    return toast(`No se puede eliminar "${art.name}" porque tiene rutas, saberes o experiencias conectadas.`, 'error');
+  }
+  if (!confirm(`Eliminar el arte "${art.name}"? Esto no se puede deshacer.`)) return;
+  await services.data.deleteArt(id, art);
+  await loadData();
+  state.editingArtId = null;
+  toast('Arte eliminado.');
+  render();
+}
+
+function startEditRoute(id) {
+  if (!hasRole('admin')) return toast('No tienes permiso para editar rutas.', 'error');
+  if (!getRoute(id)) return toast('No encontré esa ruta.', 'error');
+  state.editingRouteId = id;
+  state.editingArtId = null;
+  render();
+}
+
+function cancelRouteEditor() {
+  state.editingRouteId = null;
+  render();
+}
+
+async function deleteRoute(id) {
+  if (!hasRole('admin')) return toast('No tienes permiso para eliminar rutas.', 'error');
+  const route = getRoute(id);
+  if (!route) return;
+  const experiences = state.experiences.filter(e => e.routeId === id && e.status !== 'archived');
+  if (experiences.length) {
+    return toast(`No se puede eliminar "${route.name}" porque tiene experiencias conectadas.`, 'error');
+  }
+  if (!confirm(`Eliminar la ruta "${route.name}"? Esto no se puede deshacer.`)) return;
+  await services.data.deleteRoute(id, route);
+  await loadData();
+  state.editingRouteId = null;
+  toast('Ruta eliminada.');
+  render();
+}
+
 async function saveArt(event) {
   event.preventDefault();
   const fd = new FormData(event.currentTarget);
+  const name = fd.get('name').trim();
+  if (!name) return toast('Ponle nombre al arte.', 'error');
+  const wasEditing = Boolean(state.editingArtId);
+  if (hasDuplicateIn(state.arts, name, 'name', state.editingArtId)) {
+    return toast('Ya existe un arte con ese nombre.', 'error');
+  }
   const payload = {
-    name: fd.get('name').trim(),
-    slug: slugify(fd.get('name')),
+    name,
+    slug: slugify(name),
     description: fd.get('description').trim(),
     order: Number(fd.get('order') || state.arts.length + 1),
     active: true,
-    createdAt: nowISO(),
-    updatedAt: nowISO()
+    updatedAt: nowISO(),
+    updatedBy: state.user.uid,
+    updatedByEmail: state.user.email
   };
+  if (state.editingArtId) payload.id = state.editingArtId;
+  else {
+    payload.createdAt = nowISO();
+    payload.createdBy = state.user.uid;
+    payload.createdByEmail = state.user.email;
+  }
   await services.data.saveArt(payload);
   event.currentTarget.reset();
   await loadData();
-  toast('Arte creado. Otro reino curricular bajo control.');
+  state.editingArtId = null;
+  toast(wasEditing ? 'Arte actualizado.' : 'Arte guardado.');
   render();
 }
 
 async function saveRoute(event) {
   event.preventDefault();
   const fd = new FormData(event.currentTarget);
+  const name = fd.get('name').trim();
+  if (!name) return toast('Ponle nombre a la ruta.', 'error');
+  const wasEditing = Boolean(state.editingRouteId);
+  const artId = fd.get('artId');
+  const currentRoute = state.editingRouteId ? getRoute(state.editingRouteId) : null;
+  if (currentRoute && currentRoute.artId !== artId && state.experiences.some(e => e.routeId === currentRoute.id)) {
+    return toast('No se puede cambiar el arte de una ruta que ya tiene experiencias.', 'error');
+  }
+  if (hasDuplicateIn(state.routes, name, 'name', state.editingRouteId, route => route.artId === artId)) {
+    return toast('Ya existe una ruta con ese nombre en esta arte.', 'error');
+  }
   const payload = {
-    artId: fd.get('artId'),
-    name: fd.get('name').trim(),
-    slug: slugify(fd.get('name')),
+    artId,
+    name,
+    slug: slugify(name),
     description: fd.get('description').trim(),
     order: Number(fd.get('order') || state.routes.length + 1),
     active: true,
-    createdAt: nowISO(),
-    updatedAt: nowISO()
+    updatedAt: nowISO(),
+    updatedBy: state.user.uid,
+    updatedByEmail: state.user.email
   };
+  if (state.editingRouteId) payload.id = state.editingRouteId;
+  else {
+    payload.createdAt = nowISO();
+    payload.createdBy = state.user.uid;
+    payload.createdByEmail = state.user.email;
+  }
   await services.data.saveRoute(payload);
   event.currentTarget.reset();
   await loadData();
-  toast('Ruta creada. Ya hay camino, falta que los humanos lo usen.');
+  state.editingRouteId = null;
+  toast(wasEditing ? 'Ruta actualizada.' : 'Ruta guardada.');
   render();
 }
 
@@ -2021,12 +2206,36 @@ async function createFirebaseServices() {
         await logChange({ action: 'delete', entityType: 'skill', entityId: id, summary: `Saber eliminado: ${skill?.title || id}`, before: skill || null });
       },
       async saveArt(payload) {
-        const ref = await fsMod.addDoc(fsMod.collection(db, 'arts'), payload);
-        await logChange({ action: 'create', entityType: 'art', entityId: ref.id, summary: `Arte creado: ${payload.name}`, after: payload });
+        const { id, ...data } = payload;
+        if (id) {
+          const ref = fsMod.doc(db, 'arts', id);
+          const beforeSnap = await fsMod.getDoc(ref);
+          await fsMod.setDoc(ref, data, { merge: true });
+          await logChange({ action: 'update', entityType: 'art', entityId: id, summary: `Arte actualizado: ${data.name}`, before: beforeSnap.exists() ? beforeSnap.data() : null, after: data });
+        } else {
+          const ref = await fsMod.addDoc(fsMod.collection(db, 'arts'), data);
+          await logChange({ action: 'create', entityType: 'art', entityId: ref.id, summary: `Arte creado: ${data.name}`, after: data });
+        }
+      },
+      async deleteArt(id, art) {
+        await fsMod.deleteDoc(fsMod.doc(db, 'arts', id));
+        await logChange({ action: 'delete', entityType: 'art', entityId: id, summary: `Arte eliminado: ${art?.name || id}`, before: art || null });
       },
       async saveRoute(payload) {
-        const ref = await fsMod.addDoc(fsMod.collection(db, 'routes'), payload);
-        await logChange({ action: 'create', entityType: 'route', entityId: ref.id, summary: `Ruta creada: ${payload.name}`, after: payload });
+        const { id, ...data } = payload;
+        if (id) {
+          const ref = fsMod.doc(db, 'routes', id);
+          const beforeSnap = await fsMod.getDoc(ref);
+          await fsMod.setDoc(ref, data, { merge: true });
+          await logChange({ action: 'update', entityType: 'route', entityId: id, summary: `Ruta actualizada: ${data.name}`, before: beforeSnap.exists() ? beforeSnap.data() : null, after: data });
+        } else {
+          const ref = await fsMod.addDoc(fsMod.collection(db, 'routes'), data);
+          await logChange({ action: 'create', entityType: 'route', entityId: ref.id, summary: `Ruta creada: ${data.name}`, after: data });
+        }
+      },
+      async deleteRoute(id, route) {
+        await fsMod.deleteDoc(fsMod.doc(db, 'routes', id));
+        await logChange({ action: 'delete', entityType: 'route', entityId: id, summary: `Ruta eliminada: ${route?.name || id}`, before: route || null });
       },
       async saveInvite(payload) {
         await fsMod.setDoc(fsMod.doc(db, 'teacherInvites', payload.email), payload, { merge: true });
@@ -2043,6 +2252,10 @@ async function createFirebaseServices() {
           const ref = await fsMod.addDoc(fsMod.collection(db, 'experiences'), data);
           await logChange({ action: 'create', entityType: 'experience', entityId: ref.id, summary: `Experiencia creada: ${data.label} ${data.name}`, after: data });
         }
+      },
+      async deleteExperience(id, exp) {
+        await fsMod.deleteDoc(fsMod.doc(db, 'experiences', id));
+        await logChange({ action: 'delete', entityType: 'experience', entityId: id, summary: `Experiencia eliminada: ${exp?.label || ''} ${exp?.name || id}`.trim(), before: exp || null });
       },
     }
   };
@@ -2141,12 +2354,38 @@ function createDemoServices() {
         saveDB();
       },
       async saveArt(payload) {
-        const art = { id: uid('art'), ...payload };
-        db.arts.push(art); logChange({ action: 'create', entityType: 'art', entityId: art.id, summary: `Arte creado: ${art.name}`, after: art });
+        if (payload.id) {
+          const idx = db.arts.findIndex(a => a.id === payload.id);
+          const before = idx >= 0 ? db.arts[idx] : null;
+          if (idx >= 0) db.arts[idx] = { ...db.arts[idx], ...payload };
+          logChange({ action: 'update', entityType: 'art', entityId: payload.id, summary: `Arte actualizado: ${payload.name}`, before, after: payload });
+        } else {
+          const art = { id: uid('art'), ...payload };
+          db.arts.push(art); logChange({ action: 'create', entityType: 'art', entityId: art.id, summary: `Arte creado: ${art.name}`, after: art });
+        }
+        saveDB();
+      },
+      async deleteArt(id, art) {
+        db.arts = db.arts.filter(a => a.id !== id);
+        logChange({ action: 'delete', entityType: 'art', entityId: id, summary: `Arte eliminado: ${art?.name || id}`, before: art || null });
+        saveDB();
       },
       async saveRoute(payload) {
-        const route = { id: uid('route'), ...payload };
-        db.routes.push(route); logChange({ action: 'create', entityType: 'route', entityId: route.id, summary: `Ruta creada: ${route.name}`, after: route });
+        if (payload.id) {
+          const idx = db.routes.findIndex(r => r.id === payload.id);
+          const before = idx >= 0 ? db.routes[idx] : null;
+          if (idx >= 0) db.routes[idx] = { ...db.routes[idx], ...payload };
+          logChange({ action: 'update', entityType: 'route', entityId: payload.id, summary: `Ruta actualizada: ${payload.name}`, before, after: payload });
+        } else {
+          const route = { id: uid('route'), ...payload };
+          db.routes.push(route); logChange({ action: 'create', entityType: 'route', entityId: route.id, summary: `Ruta creada: ${route.name}`, after: route });
+        }
+        saveDB();
+      },
+      async deleteRoute(id, route) {
+        db.routes = db.routes.filter(r => r.id !== id);
+        logChange({ action: 'delete', entityType: 'route', entityId: id, summary: `Ruta eliminada: ${route?.name || id}`, before: route || null });
+        saveDB();
       },
       async saveInvite(payload) {
         const idx = db.invites.findIndex(i => i.email === payload.email);
@@ -2166,6 +2405,11 @@ function createDemoServices() {
           db.experiences.push(exp);
           logChange({ action: 'create', entityType: 'experience', entityId: exp.id, summary: `Experiencia creada: ${exp.label} ${exp.name}`, after: exp });
         }
+        saveDB();
+      },
+      async deleteExperience(id, exp) {
+        db.experiences = db.experiences.filter(e => e.id !== id);
+        logChange({ action: 'delete', entityType: 'experience', entityId: id, summary: `Experiencia eliminada: ${exp?.label || ''} ${exp?.name || id}`.trim(), before: exp || null });
         saveDB();
       },
     }
