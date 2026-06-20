@@ -60,7 +60,8 @@ let state = {
   invites: [],
   logs: [],
   settings: {
-    componentCatalog: {}
+    componentCatalog: {},
+    categoryCatalog: []
   },
   filters: {
     search: '',
@@ -72,6 +73,7 @@ let state = {
     search: '',
     artId: 'all',
     component: 'all',
+    category: 'all',
     difficulty: 'all'
   },
   selectedArtId: 'all',
@@ -83,6 +85,7 @@ let state = {
   skillEditorOpen: false,
   editingSkillId: null,
   draftSkill: null,
+  expandedSkillIds: new Set(),
   modal: null
 };
 
@@ -118,6 +121,59 @@ function duplicateKey(value) {
     .toLowerCase()
     .trim()
     .replace(/\s+/g, ' ');
+}
+
+function cleanCategory(value) {
+  return String(value ?? '').trim();
+}
+
+function skillCategory(skill) {
+  return cleanCategory(skill?.category);
+}
+
+function categoryLabel(skill) {
+  return skillCategory(skill) || 'Sin categoría';
+}
+
+function normalizeCategoryCatalog(catalog = []) {
+  return (Array.isArray(catalog) ? catalog : [])
+    .map(item => ({
+      id: item.id || uid('cat'),
+      component: componentKeys().includes(item.component) ? item.component : 'tecnica',
+      name: cleanCategory(item.name),
+      active: item.active !== false
+    }))
+    .filter(item => item.name);
+}
+
+function categoryCatalogItems() {
+  const configured = normalizeCategoryCatalog(state.settings?.categoryCatalog || []);
+  const byKey = new Map();
+  configured.forEach(item => byKey.set(`${item.component}::${duplicateKey(item.name)}`, item));
+
+  // Compatibilidad: si ya había saberes con categoría antes del catálogo, los mostramos
+  // hasta que el admin los formalice o los reemplace.
+  state.skills.forEach(skill => {
+    const name = skillCategory(skill);
+    if (!name || !componentKeys().includes(skill.component)) return;
+    const key = `${skill.component}::${duplicateKey(name)}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, { id: uid('cat'), component: skill.component, name, active: true, derived: true });
+    }
+  });
+
+  return [...byKey.values()].sort((a, b) =>
+    (componentLabels[a.component] || a.component).localeCompare(componentLabels[b.component] || b.component) ||
+    a.name.localeCompare(b.name)
+  );
+}
+
+function activeCategoriesForComponent(component, current = '') {
+  const currentKey = duplicateKey(current);
+  const items = categoryCatalogItems()
+    .filter(item => item.component === component)
+    .filter(item => item.active || duplicateKey(item.name) === currentKey);
+  return items.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function hasDuplicateIn(items, value, field, currentId = null, scope = () => true) {
@@ -340,7 +396,7 @@ async function loadData() {
     state.users = data.users || [];
     state.invites = data.invites || [];
     state.logs = data.logs || [];
-    state.settings = data.settings || { componentCatalog: {} };
+    state.settings = data.settings || { componentCatalog: {}, categoryCatalog: [] };
     applyComponentCatalog(state.settings.componentCatalog);
     autoSelectFilters();
   } catch (error) {
@@ -636,6 +692,16 @@ function componentFilterOptions() {
   return [`<option value="all">Todos los componentes</option>`, ...activeComponentKeys().map(key => `<option value="${key}" ${state.libraryFilters.component === key ? 'selected' : ''}>${componentEmojis[key]} ${componentLabels[key]}</option>`)].join('');
 }
 
+function categoryFilterOptions() {
+  const componentScope = state.libraryFilters.component;
+  const categories = categoryCatalogItems()
+    .filter(item => item.active)
+    .filter(item => componentScope === 'all' || item.component === componentScope)
+    .map(item => item.name);
+  const unique = [...new Set(categories)].sort((a, b) => a.localeCompare(b));
+  return [`<option value="all">Todas las categorías</option>`, ...unique.map(category => `<option value="${escapeHtml(category)}" ${state.libraryFilters.category === category ? 'selected' : ''}>${escapeHtml(category)}</option>`)].join('');
+}
+
 function difficultyFilterOptions() {
   return [`<option value="all">Todas las dificultades</option>`, ...Object.entries(difficultyLabels).map(([key, label]) => `<option value="${key}" ${state.libraryFilters.difficulty === key ? 'selected' : ''}>${label}</option>`)].join('');
 }
@@ -646,10 +712,11 @@ function filteredSkills() {
   return state.skills
     .filter(s => f.artId === 'all' || s.artId === f.artId)
     .filter(s => f.component === 'all' || s.component === f.component)
+    .filter(s => f.category === 'all' || skillCategory(s) === f.category)
     .filter(s => f.difficulty === 'all' || s.difficulty === f.difficulty)
     .filter(s => {
       if (!search) return true;
-      const haystack = [s.title, s.description, s.achievement, (s.tags || []).join(' '), getArt(s.artId)?.name].join(' ').toLowerCase();
+      const haystack = [s.title, s.category, s.description, s.achievement, (s.tags || []).join(' '), getArt(s.artId)?.name].join(' ').toLowerCase();
       return haystack.includes(search);
     });
 }
@@ -665,13 +732,30 @@ function renderLibrary() {
   const sections = componentsToShow.map(key => {
     const items = skills.filter(s => s.component === key).sort((a, b) => (a.title || '').localeCompare(b.title || ''));
     if (!items.length) return '';
+    const byCategory = items.reduce((groups, skill) => {
+      const category = categoryLabel(skill);
+      groups[category] ||= [];
+      groups[category].push(skill);
+      return groups;
+    }, {});
+    const categorySections = Object.entries(byCategory)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([category, categoryItems]) => `
+        <div class="library-category">
+          <div class="library-category-head">
+            <h3>${escapeHtml(category)}</h3>
+            <span class="badge">${categoryItems.length} saber(es)</span>
+          </div>
+          <div class="grid cols-2 library-skill-grid">${categoryItems.map(renderSkillCard).join('')}</div>
+        </div>
+      `).join('');
     return `
       <div class="card library-section" data-component="${key}" style="margin-top:16px">
         <div class="row-between">
           <h2>${componentEmojis[key]} ${componentLabels[key]}</h2>
           <span class="badge">${items.length} saber(es)</span>
         </div>
-        <div class="grid cols-2" style="margin-top:14px">${items.map(renderSkillCard).join('')}</div>
+        <div class="library-category-list">${categorySections}</div>
       </div>
     `;
   }).join('');
@@ -683,6 +767,7 @@ function renderLibrary() {
           <input type="search" placeholder="Buscar saber..." value="${escapeHtml(state.libraryFilters.search)}" data-library-filter="search" />
           <select data-library-filter="artId">${libraryArtOptions()}</select>
           <select data-library-filter="component">${componentFilterOptions()}</select>
+          <select data-library-filter="category">${categoryFilterOptions()}</select>
           <select data-library-filter="difficulty">${difficultyFilterOptions()}</select>
         </div>
         ${canCreate ? `<button class="btn primary" data-action="new-skill">Nuevo saber</button>` : ''}
@@ -697,18 +782,30 @@ function renderSkillCard(skill) {
   const art = getArt(skill.artId);
   const prereqs = (skill.prerequisites || []).map(id => getSkill(id)?.title).filter(Boolean);
   const tags = skill.tags || [];
+  const isExpanded = state.expandedSkillIds.has(skill.id);
+  const hasDetails = Boolean(skill.description || skill.achievement || tags.length || prereqs.length);
+  const category = skillCategory(skill);
   return `
-    <article class="experience-card skill-card" data-component="${skill.component}">
-      <div class="row-between">
-        <div class="row small muted"><span>${escapeHtml(art?.name || 'Sin arte')}</span><span>›</span><span>${componentEmojis[skill.component] || ''} ${escapeHtml(componentLabels[skill.component] || skill.component || '')}</span></div>
+    <article class="experience-card skill-card compact ${isExpanded ? 'is-expanded' : ''}" data-component="${skill.component}" data-skill-id="${skill.id}">
+      <div class="skill-card-main">
+        <div class="skill-card-copy">
+          <div class="row small muted skill-card-meta"><span>${escapeHtml(art?.name || 'Sin arte')}</span><span>›</span><span>${componentEmojis[skill.component] || ''} ${escapeHtml(componentLabels[skill.component] || skill.component || '')}</span>${category ? `<span>›</span><span>${escapeHtml(category)}</span>` : ''}</div>
+          <h3>${escapeHtml(skill.title || 'Sin título')}</h3>
+        </div>
         ${difficultyBadge(skill.difficulty)}
       </div>
-      <h3 style="margin:6px 0 0">${escapeHtml(skill.title || 'Sin título')}</h3>
-      ${skill.description ? `<p class="muted" style="margin:0">${escapeHtml(skill.description)}</p>` : ''}
-      ${skill.achievement ? `<p class="small muted" style="margin:0"><strong>Logro:</strong> ${escapeHtml(skill.achievement)}</p>` : ''}
-      ${tags.length ? `<div class="row small muted">${tags.map(t => `<span class="badge">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
-      ${prereqs.length ? `<p class="small muted" style="margin:0">↳ Requiere: ${prereqs.map(escapeHtml).join(', ')}</p>` : ''}
-      ${canEditArt(skill.artId) ? `<div class="row-between"><button class="btn small danger" data-action="delete-skill" data-id="${skill.id}">Eliminar</button><button class="btn small teal" data-action="edit-skill" data-id="${skill.id}">Editar</button></div>` : ''}
+      ${isExpanded ? `
+        <div class="skill-card-details">
+          ${skill.description ? `<p class="muted">${escapeHtml(skill.description)}</p>` : ''}
+          ${skill.achievement ? `<p class="small muted"><strong>Logro:</strong> ${escapeHtml(skill.achievement)}</p>` : ''}
+          ${tags.length ? `<div class="row small muted">${tags.map(t => `<span class="badge">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+          ${prereqs.length ? `<p class="small muted">↳ Requiere: ${prereqs.map(escapeHtml).join(', ')}</p>` : ''}
+        </div>
+      ` : ''}
+      <div class="skill-card-actions">
+        ${hasDetails ? `<button class="btn small" data-action="toggle-skill-details" data-id="${skill.id}">${isExpanded ? 'Ver menos' : 'Ver más'}</button>` : '<span></span>'}
+        ${canEditArt(skill.artId) ? `<div class="row" style="gap:8px"><button class="btn small danger" data-action="delete-skill" data-id="${skill.id}">Eliminar</button><button class="btn small teal" data-action="edit-skill" data-id="${skill.id}">Editar</button></div>` : ''}
+      </div>
     </article>
   `;
 }
@@ -719,6 +816,11 @@ function renderSkillEditor() {
   const artOptions = arts.map(a => `<option value="${a.id}" ${d.artId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('');
   const optionKeys = activeComponentKeys().includes(d.component) ? activeComponentKeys() : [d.component, ...activeComponentKeys()];
   const componentOptions = optionKeys.map(key => `<option value="${key}" ${d.component === key ? 'selected' : ''}>${componentEmojis[key]} ${componentLabels[key]}</option>`).join('');
+  const categoryOptions = [
+    '<option value="">Elige categoría</option>',
+    ...activeCategoriesForComponent(d.component, d.category)
+      .map(item => `<option value="${escapeHtml(item.name)}" ${d.category === item.name ? 'selected' : ''}>${escapeHtml(item.name)}${item.derived ? ' (en uso)' : ''}</option>`)
+  ].join('');
   const difficultyOptions = Object.entries(difficultyLabels).map(([key, label]) => `<option value="${key}" ${d.difficulty === key ? 'selected' : ''}>${label}</option>`).join('');
   const prereqCandidates = state.skills
     .filter(s => s.artId === d.artId && s.id !== state.editingSkillId)
@@ -736,6 +838,10 @@ function renderSkillEditor() {
       <div class="grid cols-2">
         <div class="form-field"><label>Arte</label><select data-skill="artId">${artOptions}</select></div>
         <div class="form-field"><label>Componente</label><select data-skill="component">${componentOptions}</select></div>
+      </div>
+      <div class="form-field">
+        <label>Categoría</label>
+        <select data-skill="category">${categoryOptions}</select>
       </div>
       <div class="form-field"><label>Título</label><input data-skill="title" value="${escapeHtml(d.title)}" placeholder="Ej: Escala de Do mayor, dos octavas" required /></div>
       <div class="form-field"><label>Descripción</label><textarea data-skill="description" placeholder="Qué se trabaja exactamente">${escapeHtml(d.description)}</textarea></div>
@@ -827,10 +933,11 @@ function renderBoardColumn({ id, title, skills, source, editable, empty }) {
 }
 
 function renderBoardSkillCard(skill, source, editable, ref) {
+  const category = skillCategory(skill);
   return `
     <div class="board-card" data-component="${skill.component}" data-skill-id="${skill.id}" data-source="${source}" ${editable ? 'draggable="true"' : ''}>
       <div class="strong small">${escapeHtml(skill.title || 'Sin título')}</div>
-      <div class="row small muted" style="gap:6px;margin-top:4px">${componentEmojis[skill.component] || ''} ${difficultyBadge(skill.difficulty)}</div>
+      <div class="row small muted" style="gap:6px;margin-top:4px">${componentEmojis[skill.component] || ''} ${category ? `${escapeHtml(category)} · ` : ''}${difficultyBadge(skill.difficulty)}</div>
       ${ref?.note ? `<div class="small muted" style="margin-top:4px">📝 ${escapeHtml(ref.note)}</div>` : ''}
     </div>
   `;
@@ -1145,12 +1252,13 @@ function renderComponentsEditor() {
 }
 
 function renderSkillRefRow(ref, skill, index, total) {
+  const category = skillCategory(skill);
   return `
     <div class="skill-ref" data-component="${skill.component}">
       <div class="skill-ref-head">
         <div style="min-width:0">
           <div class="strong" style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(skill.title)}</div>
-          <div class="small muted">${componentEmojis[skill.component] || ''} ${escapeHtml(componentLabels[skill.component] || '')} · ${escapeHtml(difficultyLabels[skill.difficulty] || '')}</div>
+          <div class="small muted">${componentEmojis[skill.component] || ''} ${escapeHtml(componentLabels[skill.component] || '')}${category ? ` · ${escapeHtml(category)}` : ''} · ${escapeHtml(difficultyLabels[skill.difficulty] || '')}</div>
         </div>
         <div class="row" style="gap:6px">
           <button type="button" class="btn small" data-action="move-skill-ref" data-id="${skill.id}" data-dir="up" ${index === 0 ? 'disabled' : ''}>↑</button>
@@ -1345,6 +1453,7 @@ function renderSettings() {
       </section>
     </div>
     ${hasRole('admin') ? renderComponentCatalogSettings() : ''}
+    ${hasRole('admin') ? renderCategoryCatalogSettings() : ''}
   `;
 }
 
@@ -1382,6 +1491,51 @@ function renderComponentCatalogSettings() {
         </div>
         <button class="btn primary" type="submit">Guardar componentes</button>
       </form>
+    </section>
+  `;
+}
+
+function renderCategoryCatalogSettings() {
+  const componentOptions = activeComponentKeys()
+    .map(key => `<option value="${key}">${componentEmojis[key]} ${componentLabels[key]}</option>`)
+    .join('');
+  const items = categoryCatalogItems();
+  const rows = items.length
+    ? items.map(item => {
+      const used = state.skills.filter(skill => skill.component === item.component && duplicateKey(skillCategory(skill)) === duplicateKey(item.name)).length;
+      return `
+        <div class="category-catalog-row ${item.active ? '' : 'is-inactive'}" data-component="${item.component}">
+          <div>
+            <strong>${escapeHtml(item.name)}</strong>
+            <div class="small muted">${componentEmojis[item.component] || ''} ${escapeHtml(componentLabels[item.component] || item.component)}${item.derived ? ' · detectada en saberes existentes' : ''}</div>
+          </div>
+          <span class="badge">${used} saber(es)</span>
+          <button class="btn small ${item.active ? 'danger' : 'teal'}" type="button" data-action="${item.active ? 'delete-category-catalog-item' : 'restore-category-catalog-item'}" data-id="${escapeHtml(item.id)}" data-component-key="${item.component}" data-name="${escapeHtml(item.name)}">
+            ${item.active ? 'Eliminar' : 'Reactivar'}
+          </button>
+        </div>
+      `;
+    }).join('')
+    : '<p class="muted small">Aún no hay categorías. Crea las primeras para ordenar la biblioteca.</p>';
+
+  return `
+    <section class="card stack" style="margin-top:18px">
+      <div>
+        <h2>Categorías de saberes</h2>
+        <p class="small muted" style="margin:4px 0 0">Estas opciones aparecen en el desplegable Categoría al crear o editar saberes.</p>
+      </div>
+      <form id="category-catalog-form" class="category-catalog-form">
+        <div class="form-field">
+          <label>Componente</label>
+          <select name="component" required>${componentOptions}</select>
+        </div>
+        <div class="form-field">
+          <label>Nueva categoría</label>
+          <input name="name" placeholder="Ej: Postura, Escalas, Lectura rítmica" required />
+        </div>
+        <button class="btn primary" type="submit">Agregar categoría</button>
+      </form>
+      <div class="category-catalog-list">${rows}</div>
     </section>
   `;
 }
@@ -1489,6 +1643,7 @@ function bindShellEvents() {
   $('#route-form')?.addEventListener('submit', saveRoute);
   $('#invite-form')?.addEventListener('submit', saveInvite);
   $('#component-catalog-form')?.addEventListener('submit', saveComponentCatalog);
+  $('#category-catalog-form')?.addEventListener('submit', saveCategoryCatalogItem);
 }
 
 async function handleAction(event) {
@@ -1505,6 +1660,7 @@ async function handleAction(event) {
     if (action === 'close-modal') { state.modal = null; render(); }
     if (action === 'cancel-editor') { state.draftExperience = null; state.editingExperienceId = null; render(); }
     if (action === 'new-skill') startNewSkill();
+    if (action === 'toggle-skill-details') toggleSkillDetails(id);
     if (action === 'edit-skill') startEditSkill(id);
     if (action === 'delete-skill') await deleteSkill(id);
     if (action === 'edit-art') startEditArt(id);
@@ -1522,12 +1678,21 @@ async function handleAction(event) {
     if (action === 'export-json') exportJson();
     if (action === 'delete-component-catalog-item') deleteComponentCatalogItem(id);
     if (action === 'restore-component-catalog-item') restoreComponentCatalogItem(id);
+    if (action === 'delete-category-catalog-item') deleteCategoryCatalogItem(event.currentTarget.dataset.componentKey, event.currentTarget.dataset.name);
+    if (action === 'restore-category-catalog-item') restoreCategoryCatalogItem(event.currentTarget.dataset.componentKey, event.currentTarget.dataset.name);
     if (action === 'reset-component-catalog') resetComponentCatalog();
     if (action === 'reset-demo') resetDemo();
   } catch (error) {
     console.error(error);
     toast(error.message || 'Algo falló. Qué raro, un sistema fallando.', 'error');
   }
+}
+
+function toggleSkillDetails(id) {
+  if (!id) return;
+  if (state.expandedSkillIds.has(id)) state.expandedSkillIds.delete(id);
+  else state.expandedSkillIds.add(id);
+  render();
 }
 
 function handleMainFilter(event) {
@@ -1549,6 +1714,7 @@ function handleLibraryFilter(event) {
   const isSearch = key === 'search';
   const active = document.activeElement;
   state.libraryFilters[key] = event.currentTarget.value;
+  if (key === 'artId' || key === 'component') state.libraryFilters.category = 'all';
   render();
   // Mantener el foco y el cursor en el buscador tras re-render.
   if (isSearch) {
@@ -1635,6 +1801,7 @@ function startNewSkill() {
   state.draftSkill = {
     artId: presetArt.id,
     component: defaultComponent,
+    category: '',
     title: '',
     description: '',
     achievement: '',
@@ -1655,6 +1822,7 @@ function startEditSkill(id) {
   state.draftSkill = {
     artId: skill.artId,
     component: skill.component || 'tecnica',
+    category: skill.category || '',
     title: skill.title || '',
     description: skill.description || '',
     achievement: skill.achievement || '',
@@ -1679,6 +1847,11 @@ function handleSkillDraftChange(event) {
     // Los prerrequisitos son saberes de la misma arte; al cambiar, descarto los que ya no aplican.
     state.draftSkill.prerequisites = (state.draftSkill.prerequisites || [])
       .filter(id => getSkill(id)?.artId === event.currentTarget.value);
+    state.draftSkill.category = '';
+    render();
+  }
+  if (key === 'component') {
+    state.draftSkill.category = '';
     render();
   }
 }
@@ -1696,6 +1869,7 @@ async function saveSkill(event) {
   const d = state.draftSkill;
   if (!canEditArt(d.artId)) return toast('No tienes permiso para guardar en esta arte.', 'error');
   if (!d.title.trim()) return toast('Ponle título al saber. Hasta una escala merece nombre.', 'error');
+  if (!cleanCategory(d.category)) return toast('Elige una categoría. Si no aparece, créala primero en Configuración.', 'error');
   if (hasDuplicateIn(state.skills, d.title, 'title', state.editingSkillId, skill => skill.artId === d.artId)) {
     return toast('Ya existe un saber con ese título en esta arte.', 'error');
   }
@@ -1703,6 +1877,7 @@ async function saveSkill(event) {
   const payload = {
     artId: d.artId,
     component: d.component,
+    category: cleanCategory(d.category),
     title: d.title.trim(),
     description: (d.description || '').trim(),
     achievement: (d.achievement || '').trim(),
@@ -2096,6 +2271,65 @@ async function saveComponentCatalog(event) {
   render();
 }
 
+async function saveCategoryCatalogItem(event) {
+  event.preventDefault();
+  if (!hasRole('admin')) return toast('Solo admins pueden editar categorías.', 'error');
+  const fd = new FormData(event.currentTarget);
+  const component = fd.get('component');
+  const name = cleanCategory(fd.get('name'));
+  if (!componentKeys().includes(component)) return toast('Elige un componente válido.', 'error');
+  if (!name) return toast('Escribe el nombre de la categoría.', 'error');
+
+  const catalog = normalizeCategoryCatalog(state.settings.categoryCatalog || []);
+  const existing = catalog.find(item => item.component === component && duplicateKey(item.name) === duplicateKey(name));
+  if (existing) {
+    existing.name = name;
+    existing.active = true;
+  } else {
+    catalog.push({ id: uid('cat'), component, name, active: true });
+  }
+
+  await services.data.saveSettings({ categoryCatalog: catalog });
+  await loadData();
+  event.currentTarget.reset();
+  toast('Categoría guardada. Ya aparece en el desplegable de saberes.');
+  render();
+}
+
+async function deleteCategoryCatalogItem(component, name) {
+  if (!hasRole('admin')) return toast('Solo admins pueden editar categorías.', 'error');
+  const normalizedName = cleanCategory(name);
+  if (!componentKeys().includes(component) || !normalizedName) return;
+  const used = state.skills.filter(skill => skill.component === component && duplicateKey(skillCategory(skill)) === duplicateKey(normalizedName)).length;
+  if (used) {
+    return toast(`No se puede eliminar "${normalizedName}" porque ${used} saber(es) todavía la usan. Cambia esos saberes primero.`, 'error');
+  }
+  if (!confirm(`¿Eliminar "${normalizedName}" del desplegable de categorías?`)) return;
+  const catalog = normalizeCategoryCatalog(state.settings.categoryCatalog || []);
+  const item = catalog.find(entry => entry.component === component && duplicateKey(entry.name) === duplicateKey(normalizedName));
+  if (item) item.active = false;
+  else catalog.push({ id: uid('cat'), component, name: normalizedName, active: false });
+  await services.data.saveSettings({ categoryCatalog: catalog });
+  await loadData();
+  if (state.libraryFilters.category === normalizedName) state.libraryFilters.category = 'all';
+  toast('Categoría eliminada del desplegable.');
+  render();
+}
+
+async function restoreCategoryCatalogItem(component, name) {
+  if (!hasRole('admin')) return toast('Solo admins pueden editar categorías.', 'error');
+  const normalizedName = cleanCategory(name);
+  if (!componentKeys().includes(component) || !normalizedName) return;
+  const catalog = normalizeCategoryCatalog(state.settings.categoryCatalog || []);
+  const item = catalog.find(entry => entry.component === component && duplicateKey(entry.name) === duplicateKey(normalizedName));
+  if (item) item.active = true;
+  else catalog.push({ id: uid('cat'), component, name: normalizedName, active: true });
+  await services.data.saveSettings({ categoryCatalog: catalog });
+  await loadData();
+  toast('Categoría reactivada.');
+  render();
+}
+
 async function deleteComponentCatalogItem(key) {
   if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
   if (!componentKeys().includes(key)) return;
@@ -2334,7 +2568,9 @@ async function createFirebaseServices() {
           readCol('changeLogs'),
           fsMod.getDoc(fsMod.doc(db, 'settings', 'componentCatalog'))
         ]);
-        const componentCatalog = settingsSnap.exists() ? settingsSnap.data().components || {} : {};
+        const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
+        const componentCatalog = settingsData.components || {};
+        const categoryCatalog = settingsData.categories || [];
         const sortedRoutes = routes.sort((a,b)=>(a.order||0)-(b.order||0));
         const experiences = await readExperiencesForProfile(state.profile, sortedRoutes);
         let users = [], invites = [];
@@ -2349,19 +2585,20 @@ async function createFirebaseServices() {
           users,
           invites,
           logs: logs.sort((a,b)=> new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
-          settings: { componentCatalog }
+          settings: { componentCatalog, categoryCatalog }
         };
       },
       async saveSettings(payload) {
         if (!state.profile || state.profile.role !== 'admin') throw new Error('Solo admins pueden editar configuración.');
-        const componentCatalog = payload.componentCatalog || {};
-        await fsMod.setDoc(fsMod.doc(db, 'settings', 'componentCatalog'), {
-          components: componentCatalog,
+        const data = {
           updatedAt: nowISO(),
           updatedBy: state.user.uid,
           updatedByEmail: state.user.email
-        }, { merge: true });
-        await logChange({ action: 'update', entityType: 'settings', entityId: 'componentCatalog', summary: 'Componentes de biblioteca actualizados', after: componentCatalog });
+        };
+        if (payload.componentCatalog) data.components = payload.componentCatalog;
+        if (payload.categoryCatalog) data.categories = normalizeCategoryCatalog(payload.categoryCatalog);
+        await fsMod.setDoc(fsMod.doc(db, 'settings', 'componentCatalog'), data, { merge: true });
+        await logChange({ action: 'update', entityType: 'settings', entityId: 'componentCatalog', summary: 'Configuración de biblioteca actualizada', after: payload });
       },
       async saveSkill(payload) {
         const { id, ...data } = payload;
@@ -2446,10 +2683,11 @@ function createDemoServices() {
     if (raw) {
       const parsed = JSON.parse(raw);
       parsed.skills ||= []; // Compatibilidad con DBs demo previas a la biblioteca.
-      parsed.settings ||= { componentCatalog: {} };
+      parsed.settings ||= { componentCatalog: {}, categoryCatalog: [] };
+      parsed.settings.categoryCatalog ||= [];
       return parsed;
     }
-    const initial = { users: [], invites: [], arts: [], routes: [], experiences: [], skills: [], changeLogs: [], settings: { componentCatalog: {} } };
+    const initial = { users: [], invites: [], arts: [], routes: [], experiences: [], skills: [], changeLogs: [], settings: { componentCatalog: {}, categoryCatalog: [] } };
     localStorage.setItem(storageKey, JSON.stringify(initial));
     return initial;
   }
@@ -2508,13 +2746,15 @@ function createDemoServices() {
           users: db.users,
           invites: db.invites,
           logs: db.changeLogs.sort((a,b)=> new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
-          settings: db.settings || { componentCatalog: {} }
+          settings: db.settings || { componentCatalog: {}, categoryCatalog: [] }
         };
       },
       async saveSettings(payload) {
         if (!hasRole('admin')) throw new Error('Solo admins pueden editar configuración.');
-        db.settings = { ...(db.settings || {}), componentCatalog: payload.componentCatalog || {} };
-        logChange({ action: 'update', entityType: 'settings', entityId: 'componentCatalog', summary: 'Componentes de biblioteca actualizados', after: db.settings.componentCatalog });
+        db.settings = { ...(db.settings || {}) };
+        if (payload.componentCatalog) db.settings.componentCatalog = payload.componentCatalog;
+        if (payload.categoryCatalog) db.settings.categoryCatalog = normalizeCategoryCatalog(payload.categoryCatalog);
+        logChange({ action: 'update', entityType: 'settings', entityId: 'componentCatalog', summary: 'Configuración de biblioteca actualizada', after: payload });
         saveDB();
       },
       async saveSkill(payload) {
