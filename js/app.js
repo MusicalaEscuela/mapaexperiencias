@@ -387,6 +387,33 @@ function experienceComponentItems(exp, component) {
 function routesByArt(artId) { return state.routes.filter(r => artId === 'all' || r.artId === artId).sort((a,b) => (a.order || 0) - (b.order || 0)); }
 function experiencesByRoute(routeId) { return state.experiences.filter(e => e.routeId === routeId && e.status !== 'archived').sort((a,b) => (a.order || 0) - (b.order || 0)); }
 
+function priorExperiencesForDraft(draft = state.draftExperience) {
+  if (!draft?.routeId) return [];
+  const currentOrder = Number(draft.order || 0);
+  const routeExperiences = experiencesByRoute(draft.routeId)
+    .filter(exp => exp.id !== state.editingExperienceId && exp.id !== draft.id);
+  const previousByOrder = routeExperiences.filter(exp => !currentOrder || Number(exp.order || 0) < currentOrder);
+  return previousByOrder.length || draft.id || state.editingExperienceId ? previousByOrder : routeExperiences;
+}
+
+function skillIdsUsedBeforeDraft(draft = state.draftExperience) {
+  const used = new Set();
+  priorExperiencesForDraft(draft).forEach(exp => {
+    (exp.skillRefs || []).forEach(ref => {
+      if (ref.skillId) used.add(ref.skillId);
+    });
+  });
+  return used;
+}
+
+function experienceLabel(exp) {
+  return `${exp.label || `Experiencia ${exp.order || ''}`} ${exp.name ? `· ${exp.name}` : ''}`.trim();
+}
+
+function prerequisiteExperienceNames(ids = []) {
+  return ids.map(id => getExperience(id)).filter(Boolean).map(experienceLabel);
+}
+
 function canSeeExperience(exp) {
   if (!state.profile) return false;
   if (state.profile.role === 'admin') return true;
@@ -692,6 +719,7 @@ function renderExperienceCard(exp) {
   const route = getRoute(exp.routeId);
   const art = getArt(exp.artId);
   const counts = experienceComponentCounts(exp);
+  const prereqNames = prerequisiteExperienceNames(exp.prerequisiteExperienceIds || []);
   return `
     <article class="experience-card">
       <div class="row-between">
@@ -702,6 +730,7 @@ function renderExperienceCard(exp) {
         ${statusBadge(exp.status)}
       </div>
       <p class="muted" style="margin:0">${escapeHtml(exp.objective || exp.description || 'Sin objetivo escrito todavía.')}</p>
+      ${prereqNames.length ? `<p class="small muted" style="margin:0">&rarr; Requiere: ${prereqNames.map(escapeHtml).join(', ')}</p>` : ''}
       <div class="component-grid">
         ${activeComponentKeys().map(key => `<div class="component-pill" data-component="${key}"><strong>${componentEmojis[key]} ${componentLabels[key]}</strong><span>${counts[key]} saber(es)</span></div>`).join('')}
       </div>
@@ -1328,7 +1357,8 @@ function renderExperienceEditor() {
         <div class="form-field"><label>Descripción</label><textarea data-draft="description" placeholder="Resumen corto de la experiencia">${escapeHtml(d.description)}</textarea></div>
         <div class="form-field"><label>Objetivo general</label><textarea data-draft="objective" placeholder="Qué debe lograr el estudiante">${escapeHtml(d.objective)}</textarea></div>
         <div class="form-grid">
-          <div class="form-field"><label>Prerrequisitos</label><textarea data-draft="prerequisites" placeholder="Qué debería dominar antes">${escapeHtml(d.prerequisites)}</textarea></div>
+          <div class="form-field"><label>Experiencias previas requeridas</label>${renderPrerequisiteExperiencePicker()}</div>
+          <div class="form-field"><label>Prerrequisitos / notas</label><textarea data-draft="prerequisites" placeholder="Qué debería dominar antes">${escapeHtml(d.prerequisites)}</textarea></div>
           <div class="form-field"><label>Evidencias de logro</label><textarea data-draft="evidence" placeholder="Cómo sabemos que puede avanzar">${escapeHtml(d.evidence)}</textarea></div>
         </div>
         <div class="form-grid">
@@ -1345,12 +1375,32 @@ function renderExperienceEditor() {
   `;
 }
 
+function renderPrerequisiteExperiencePicker() {
+  const d = state.draftExperience;
+  const options = priorExperiencesForDraft(d);
+  if (!d.routeId) return `<p class="small muted">Elige una ruta para ver experiencias previas disponibles.</p>`;
+  if (!options.length) return `<p class="small muted">Esta es la primera experiencia de la ruta, así que no hay experiencias previas para marcar como prerrequisito.</p>`;
+  const selected = new Set(d.prerequisiteExperienceIds || []);
+  return `
+    <div class="prereq-list">
+      ${options.map(exp => `
+        <label class="prereq-option">
+          <input type="checkbox" data-experience-prereq="${exp.id}" ${selected.has(exp.id) ? 'checked' : ''} />
+          <span>${escapeHtml(experienceLabel(exp))}</span>
+        </label>
+      `).join('')}
+    </div>
+  `;
+}
+
 function renderComponentsEditor() {
   const d = state.draftExperience;
   const refs = d.skillRefs || [];
   const usedIds = new Set(refs.map(r => r.skillId));
+  const usedBeforeIds = skillIdsUsedBeforeDraft(d);
   const route = getRoute(d.routeId);
-  const available = (route ? skillsByRoute(route) : skillsByArt(d.artId)).filter(s => !usedIds.has(s.id));
+  const available = (route ? skillsByRoute(route) : skillsByArt(d.artId))
+    .filter(s => !usedIds.has(s.id) && !usedBeforeIds.has(s.id));
 
   const selected = refs.length
     ? resolveSkillRefs(refs).map(({ ref, skill }, index) => renderSkillRefRow(ref, skill, index, refs.length)).join('')
@@ -1381,7 +1431,7 @@ function renderComponentsEditor() {
     ? `<p class="muted small">Elige primero un arte arriba.</p>`
     : (available.length
       ? availableGrouped
-      : `<p class="muted small">No hay más saberes disponibles para esta ruta. ${(route ? skillsByRoute(route) : skillsByArt(d.artId)).length ? 'Ya los agregaste todos.' : 'Crea saberes en la <strong>Biblioteca</strong> primero y asígnalos a esta ruta.'}</p>`);
+      : `<p class="muted small">No hay más saberes disponibles para esta ruta. ${(route ? skillsByRoute(route) : skillsByArt(d.artId)).length ? 'Los saberes de experiencias previas ya quedan reservados y no se repiten en este nivel.' : 'Crea saberes en la <strong>Biblioteca</strong> primero y asígnalos a esta ruta.'}</p>`);
 
   return `
     <section class="card stack">
@@ -1693,6 +1743,7 @@ function renderModal() {
     const exp = getExperience(state.modal.id);
     if (!exp) return '';
     const resources = exp.resources || [];
+    const prereqExperienceNames = prerequisiteExperienceNames(exp.prerequisiteExperienceIds || []);
     return `
       <div class="modal-backdrop" data-action="close-modal">
         <article class="modal" onclick="event.stopPropagation()">
@@ -1707,7 +1758,7 @@ function renderModal() {
           <p>${escapeHtml(exp.description || '')}</p>
           <h3>Objetivo</h3><p>${escapeHtml(exp.objective || 'Sin objetivo')}</p>
           <div class="grid cols-2">
-            <div><h3>Prerrequisitos</h3><p class="muted">${escapeHtml(exp.prerequisites || 'Sin prerrequisitos')}</p></div>
+            <div><h3>Prerrequisitos</h3><p class="muted">${escapeHtml([prereqExperienceNames.length ? `Experiencias previas: ${prereqExperienceNames.join(', ')}` : '', exp.prerequisites || ''].filter(Boolean).join(' · ') || 'Sin prerrequisitos')}</p></div>
             <div><h3>Evidencias</h3><p class="muted">${escapeHtml(exp.evidence || 'Sin evidencias')}</p></div>
           </div>
           ${Object.entries(componentLabels).map(([key, label]) => `<h3>${componentEmojis[key]} ${label}</h3>${renderCompareCell(experienceComponentItems(exp, key))}`).join('')}
@@ -1785,6 +1836,7 @@ function bindShellEvents() {
   });
   $$('[data-resource-field]').forEach(el => el.addEventListener('input', handleResourceDraftChange));
   $$('[data-resource-field]').forEach(el => el.addEventListener('change', handleResourceDraftChange));
+  $$('[data-experience-prereq]').forEach(el => el.addEventListener('change', handleExperiencePrereqToggle));
 
   $('#experience-form')?.addEventListener('submit', saveExperience);
   $('#skill-form')?.addEventListener('submit', saveSkill);
@@ -1897,6 +1949,7 @@ function startNewExperience(routeId = null) {
     description: '',
     objective: '',
     prerequisites: '',
+    prerequisiteExperienceIds: [],
     evidence: '',
     teacherNotes: '',
     internalNotes: '',
@@ -1915,7 +1968,7 @@ function startEditExperience(id) {
   state.modal = null;
   state.view = 'experiences';
   state.editingExperienceId = id;
-  state.draftExperience = JSON.parse(JSON.stringify({ ...exp, components: { ...emptyComponents(), ...(exp.components || {}) }, skillRefs: exp.skillRefs || [], resources: exp.resources || [] }));
+  state.draftExperience = JSON.parse(JSON.stringify({ ...exp, components: { ...emptyComponents(), ...(exp.components || {}) }, skillRefs: exp.skillRefs || [], prerequisiteExperienceIds: exp.prerequisiteExperienceIds || [], resources: exp.resources || [] }));
   render();
 }
 
@@ -2110,6 +2163,12 @@ function handleDraftChange(event) {
   if (key === 'artId') {
     const available = state.routes.find(r => r.artId === value && canEditRoute(r.id, r.artId));
     state.draftExperience.routeId = available?.id || '';
+    state.draftExperience.prerequisiteExperienceIds = [];
+    render();
+  }
+  if (['routeId', 'order'].includes(key)) {
+    const validIds = new Set(priorExperiencesForDraft(state.draftExperience).map(exp => exp.id));
+    state.draftExperience.prerequisiteExperienceIds = (state.draftExperience.prerequisiteExperienceIds || []).filter(id => validIds.has(id));
     render();
   }
 }
@@ -2125,6 +2184,15 @@ function handleResourceDraftChange(event) {
   const index = Number(event.currentTarget.dataset.index);
   const field = event.currentTarget.dataset.resourceField;
   state.draftExperience.resources[index][field] = event.currentTarget.value;
+}
+
+function handleExperiencePrereqToggle(event) {
+  const id = event.currentTarget.dataset.experiencePrereq;
+  const set = new Set(state.draftExperience.prerequisiteExperienceIds || []);
+  event.currentTarget.checked ? set.add(id) : set.delete(id);
+  const validIds = new Set(priorExperiencesForDraft(state.draftExperience).map(exp => exp.id));
+  state.draftExperience.prerequisiteExperienceIds = [...set].filter(expId => validIds.has(expId));
+  render();
 }
 
 function addSkillRef(skillId) {
@@ -2236,6 +2304,7 @@ async function saveExperience(event) {
     .map(r => ({ ...r, title: (r.title || '').trim(), url: (r.url || '').trim(), description: (r.description || '').trim() }));
   const duplicateResourceMessage = firstDuplicateResource(resources);
   if (duplicateResourceMessage) return toast(duplicateResourceMessage, 'error');
+  const validPrereqExperienceIds = new Set(priorExperiencesForDraft(d).map(exp => exp.id));
   const payload = {
     ...d,
     name: d.name.trim(),
@@ -2244,6 +2313,7 @@ async function saveExperience(event) {
     updatedAt: nowISO(),
     updatedBy: state.user.uid,
     updatedByEmail: state.user.email,
+    prerequisiteExperienceIds: [...new Set(d.prerequisiteExperienceIds || [])].filter(id => validPrereqExperienceIds.has(id)),
     components: normalizeComponents(d.components),
     skillRefs: uniqueSkillRefs(d.skillRefs || [])
       .filter(r => getSkill(r.skillId))
