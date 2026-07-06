@@ -79,6 +79,7 @@ let state = {
   },
   selectedArtId: 'all',
   selectedRouteId: 'all',
+  prereqViewMode: 'columns',
   editingArtId: null,
   editingRouteId: null,
   editingExperienceId: null,
@@ -457,6 +458,7 @@ function render() {
 
   app.innerHTML = renderShell();
   bindShellEvents();
+  if (state.view === 'prereqs' && state.prereqViewMode === 'tree') requestAnimationFrame(drawPrereqBranches);
 }
 
 function renderLoading() {
@@ -795,7 +797,6 @@ function renderLibrary() {
       </div>
     `;
   }).join('');
-
   return `
     <section class="card">
       <div class="toolbar">
@@ -1101,8 +1102,10 @@ function renderPrereqs() {
   }
 
   const { layers, cyclic, dependents } = topoLayers(artSkills);
+  const treeLayers = orderedTreeLayers(layers);
   const route = getRoute(state.selectedRouteId);
   const validationBlock = route ? renderOrderingValidation(route) : '';
+  const isTree = state.prereqViewMode === 'tree';
 
   const cyclesBlock = cyclic.length
     ? `<div class="card soft" style="margin-top:14px;border-color:#fecdd3"><strong>⚠️ Prerrequisitos en círculo</strong><p class="small muted" style="margin:6px 0 0">Estos saberes dependen entre sí en un ciclo y no se pueden ordenar. Revisa sus prerrequisitos: ${cyclic.map(s => escapeHtml(s.title)).join(', ')}.</p></div>`
@@ -1110,36 +1113,125 @@ function renderPrereqs() {
 
   const columns = layers.map((layer, i) => {
     const title = i === 0 ? '🌱 Base (sin prerrequisitos)' : `Capa ${i}`;
-    const cards = layer.map(s => renderPrereqCard(s, dependents.get(s.id).length)).join('');
+    const cards = layer.map(s => renderPrereqCard(s, dependents.get(s.id).length, 'board-card')).join('');
     return `
-      <div class="board-col" style="flex-basis:280px">
+      <div class="board-col">
         <div class="board-col-head"><span>${title}</span><span class="badge">${layer.length}</span></div>
         <div class="board-col-body">${cards}</div>
       </div>`;
   }).join('');
 
+  const treeColumns = treeLayers.map((layer, i) => {
+    const title = i === 0 ? 'Base (sin prerrequisitos)' : `Capa ${i}`;
+    const cards = layer.map(s => renderPrereqCard(s, dependents.get(s.id).length, 'prereq-node')).join('');
+    return `
+      <div class="prereq-level">
+        <div class="prereq-level-head"><span>${title}</span><span class="badge">${layer.length}</span></div>
+        <div class="prereq-level-nodes">${cards}</div>
+      </div>`;
+  }).join('');
+
+  const viewSwitch = `
+    <div class="row" style="margin-top:14px">
+      <button class="btn small ${!isTree ? 'teal' : ''}" data-action="prereq-columns">Vista por capas</button>
+      <button class="btn small ${isTree ? 'teal' : ''}" data-action="prereq-tree">Ver &aacute;rbol en pantalla completa</button>
+    </div>`;
+
+  const treeView = `
+    <div class="prereq-presentation" aria-label="Vista de &aacute;rbol de prerrequisitos">
+      <div class="prereq-presentation-bar">
+        <div>
+          <strong>&Aacute;rbol de prerrequisitos</strong>
+          <p class="small muted" style="margin:3px 0 0">${escapeHtml(art.name)}${route ? ` - ${escapeHtml(route.name)}` : ''}</p>
+        </div>
+        <button class="btn small" data-action="prereq-columns">Salir y volver a capas</button>
+      </div>
+      <p class="small muted prereq-tree-help">Cada l&iacute;nea va desde el saber requisito hacia el saber que lo necesita. Las tarjetas est&aacute;n reordenadas por capa para que las uniones crucen menos.</p>
+      <div class="prereq-tree-scroll" aria-label="&Aacute;rbol de prerrequisitos">
+        <div class="prereq-tree">
+          <svg class="prereq-branches" aria-hidden="true"></svg>
+          ${treeColumns}
+        </div>
+      </div>
+    </div>`;
+
   return `
     <section class="card">
       ${toolbar}
+      ${viewSwitch}
       <p class="small muted" style="margin:0">Las dependencias fluyen de izquierda (se enseña primero) a derecha. Cada saber aparece después de todos sus prerrequisitos.</p>
     </section>
     ${validationBlock}
     ${cyclesBlock}
-    <div class="board">${columns}</div>
+    ${isTree ? treeView : `<div class="board prereq-board">${columns}</div>`}
   `;
 }
 
-function renderPrereqCard(skill, dependentCount) {
+function renderPrereqCard(skill, dependentCount, className = 'prereq-node') {
   const prereqs = (skill.prerequisites || []).map(id => getSkill(id)?.title).filter(Boolean);
   return `
-    <div class="board-card" data-component="${skill.component}">
+    <article class="${className}" data-skill-id="${escapeHtml(skill.id)}" data-component="${skill.component}">
       <div class="strong small">${escapeHtml(skill.title || 'Sin título')}</div>
       <div class="row small muted" style="gap:6px;margin-top:4px">${componentEmojis[skill.component] || ''} ${difficultyBadge(skill.difficulty)}</div>
       ${prereqs.length ? `<div class="small muted" style="margin-top:6px">↳ requiere: ${prereqs.map(escapeHtml).join(', ')}</div>` : ''}
       ${dependentCount ? `<div class="small muted" style="margin-top:2px">↦ habilita ${dependentCount} saber(es)</div>` : ''}
-    </div>
+    </article>
   `;
 }
+
+function orderedTreeLayers(layers) {
+  const order = new Map();
+  return layers.map((layer, layerIndex) => {
+    const arranged = [...layer].sort((a, b) => {
+      const aPrereqs = (a.prerequisites || []).map(id => order.get(id)).filter(n => Number.isFinite(n));
+      const bPrereqs = (b.prerequisites || []).map(id => order.get(id)).filter(n => Number.isFinite(n));
+      const aAnchor = aPrereqs.length ? aPrereqs.reduce((sum, n) => sum + n, 0) / aPrereqs.length : Number.MAX_SAFE_INTEGER;
+      const bAnchor = bPrereqs.length ? bPrereqs.reduce((sum, n) => sum + n, 0) / bPrereqs.length : Number.MAX_SAFE_INTEGER;
+      if (aAnchor !== bAnchor) return aAnchor - bAnchor;
+      const aPrereqCount = (a.prerequisites || []).length;
+      const bPrereqCount = (b.prerequisites || []).length;
+      if (aPrereqCount !== bPrereqCount) return bPrereqCount - aPrereqCount;
+      return (a.title || '').localeCompare(b.title || '');
+    });
+    arranged.forEach((skill, index) => order.set(skill.id, index + (layerIndex * 0.01)));
+    return arranged;
+  });
+}
+
+function drawPrereqBranches() {
+  const tree = document.querySelector('.prereq-tree');
+  const svg = tree?.querySelector('.prereq-branches');
+  if (!tree || !svg) return;
+
+  const treeRect = tree.getBoundingClientRect();
+  const nodes = [...tree.querySelectorAll('.prereq-node')];
+  const nodesById = new Map(nodes.map(node => [node.dataset.skillId, node]));
+  svg.setAttribute('width', tree.scrollWidth);
+  svg.setAttribute('height', tree.scrollHeight);
+  svg.setAttribute('viewBox', `0 0 ${tree.scrollWidth} ${tree.scrollHeight}`);
+
+  const paths = [];
+  nodes.forEach(node => {
+    const skill = getSkill(node.dataset.skillId);
+    (skill?.prerequisites || []).forEach(prereqId => {
+      const source = nodesById.get(prereqId);
+      if (!source) return;
+      const a = source.getBoundingClientRect();
+      const b = node.getBoundingClientRect();
+      const x1 = a.right - treeRect.left;
+      const y1 = a.top + a.height / 2 - treeRect.top;
+      const x2 = b.left - treeRect.left;
+      const y2 = b.top + b.height / 2 - treeRect.top;
+      const bend = Math.max(34, (x2 - x1) * .46);
+      paths.push(`<path d="M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}" />`);
+    });
+  });
+  svg.innerHTML = paths.join('');
+}
+
+window.addEventListener('resize', () => {
+  if (state.view === 'prereqs' && state.prereqViewMode === 'tree') requestAnimationFrame(drawPrereqBranches);
+});
 
 function renderOrderingValidation(route) {
   const issues = routeOrderingIssues(route);
@@ -1710,6 +1802,8 @@ async function handleAction(event) {
   try {
     if (action === 'toggle-menu') { state.mobileMenu = !state.mobileMenu; render(); }
     if (action === 'logout') await services.auth.logout();
+    if (action === 'prereq-columns') { state.prereqViewMode = 'columns'; render(); }
+    if (action === 'prereq-tree') { state.prereqViewMode = 'tree'; render(); }
     if (action === 'new-experience') startNewExperience(routeId);
     if (action === 'edit-experience') startEditExperience(id);
     if (action === 'delete-experience') await deleteExperience(id);
