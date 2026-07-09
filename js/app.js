@@ -1461,7 +1461,8 @@ function renderSkillRefRow(ref, skill, index, total) {
         <div class="row" style="gap:6px">
           <button type="button" class="btn small" data-action="move-skill-ref" data-id="${skill.id}" data-dir="up" ${index === 0 ? 'disabled' : ''}>↑</button>
           <button type="button" class="btn small" data-action="move-skill-ref" data-id="${skill.id}" data-dir="down" ${index === total - 1 ? 'disabled' : ''}>↓</button>
-          <button type="button" class="btn small danger" data-action="remove-skill-ref" data-id="${skill.id}">Quitar</button>
+          <button type="button" class="btn small teal" data-action="edit-skill" data-id="${skill.id}">Editar saber</button>
+          <button type="button" class="btn small danger" data-action="remove-skill-ref" data-id="${skill.id}">Quitar del mapa</button>
         </div>
       </div>
       <input data-skillref-note="${skill.id}" value="${escapeHtml(ref.note || '')}" placeholder="Nota para este nivel (opcional): énfasis, variación, tempo..." />
@@ -1684,6 +1685,7 @@ function renderComponentCatalogSettings() {
               <button class="btn small ${isComponentActive(key) ? 'danger' : 'teal'}" type="button" data-action="${isComponentActive(key) ? 'delete-component-catalog-item' : 'restore-component-catalog-item'}" data-id="${key}">
                 ${isComponentActive(key) ? 'Eliminar' : 'Reactivar'}
               </button>
+              ${!isComponentActive(key) ? `<button class="btn small danger" type="button" data-action="purge-component-catalog-item" data-id="${key}">Eliminar definitivamente</button>` : ''}
             </div>
           `).join('')}
         </div>
@@ -1711,6 +1713,7 @@ function renderCategoryCatalogSettings() {
           <button class="btn small ${item.active ? 'danger' : 'teal'}" type="button" data-action="${item.active ? 'delete-category-catalog-item' : 'restore-category-catalog-item'}" data-id="${escapeHtml(item.id)}" data-component-key="${item.component}" data-name="${escapeHtml(item.name)}">
             ${item.active ? 'Eliminar' : 'Reactivar'}
           </button>
+          ${!item.active && !item.derived ? `<button class="btn small danger" type="button" data-action="purge-category-catalog-item" data-component-key="${item.component}" data-name="${escapeHtml(item.name)}">Eliminar definitivamente</button>` : ''}
         </div>
       `;
     }).join('')
@@ -1881,8 +1884,10 @@ async function handleAction(event) {
     if (action === 'export-json') exportJson();
     if (action === 'delete-component-catalog-item') deleteComponentCatalogItem(id);
     if (action === 'restore-component-catalog-item') restoreComponentCatalogItem(id);
+    if (action === 'purge-component-catalog-item') purgeComponentCatalogItem(id);
     if (action === 'delete-category-catalog-item') deleteCategoryCatalogItem(event.currentTarget.dataset.componentKey, event.currentTarget.dataset.name);
     if (action === 'restore-category-catalog-item') restoreCategoryCatalogItem(event.currentTarget.dataset.componentKey, event.currentTarget.dataset.name);
+    if (action === 'purge-category-catalog-item') purgeCategoryCatalogItem(event.currentTarget.dataset.componentKey, event.currentTarget.dataset.name);
     if (action === 'reset-component-catalog') resetComponentCatalog();
     if (action === 'reset-demo') resetDemo();
   } catch (error) {
@@ -2603,6 +2608,23 @@ async function restoreCategoryCatalogItem(component, name) {
   render();
 }
 
+async function purgeCategoryCatalogItem(component, name) {
+  if (!hasRole('admin')) return toast('Solo admins pueden editar categorías.', 'error');
+  const normalizedName = cleanCategory(name);
+  const catalog = normalizeCategoryCatalog(state.settings.categoryCatalog || []);
+  const item = catalog.find(entry => entry.component === component && duplicateKey(entry.name) === duplicateKey(normalizedName));
+  if (!item || item.active) return;
+  if (state.skills.some(skill => skill.component === component && duplicateKey(skillCategory(skill)) === duplicateKey(normalizedName))) {
+    return toast(`No se puede borrar definitivamente "${normalizedName}" porque todavía hay saberes que la usan.`, 'error');
+  }
+  if (!confirm(`¿Borrar definitivamente "${normalizedName}"? Esta acción no se puede deshacer.`)) return;
+  const nextCatalog = catalog.filter(entry => entry !== item);
+  await services.data.saveSettings({ categoryCatalog: nextCatalog });
+  state.settings = { ...(state.settings || {}), categoryCatalog: nextCatalog };
+  toast('Categoría eliminada definitivamente.');
+  render();
+}
+
 async function deleteComponentCatalogItem(key) {
   if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
   if (!componentKeys().includes(key)) return;
@@ -2631,6 +2653,21 @@ async function restoreComponentCatalogItem(key) {
   await services.data.saveSettings({ componentCatalog: catalog });
   await loadData();
   toast('Componente reactivado.');
+  render();
+}
+
+async function purgeComponentCatalogItem(key) {
+  if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
+  if (isComponentActive(key)) return;
+  if (state.skills.some(skill => skill.component === key)) {
+    return toast(`No se puede borrar definitivamente "${componentLabels[key]}" porque todavía hay saberes que lo usan.`, 'error');
+  }
+  if (!confirm(`¿Borrar definitivamente "${componentLabels[key]}"? Esta acción no se puede deshacer.`)) return;
+  const catalog = currentComponentCatalog();
+  delete catalog[key];
+  await services.data.saveSettings({ componentCatalog: catalog });
+  await loadData();
+  toast('Componente eliminado definitivamente.');
   render();
 }
 
