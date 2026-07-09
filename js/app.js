@@ -318,7 +318,7 @@ function skillRouteLabels(skill) {
   return routeIds.map(id => getRoute(id)?.name).filter(Boolean);
 }
 
-function componentKeys() {
+function allComponentKeys() {
   return Object.keys(defaultComponentLabels);
 }
 
@@ -326,8 +326,13 @@ function componentCatalogEntry(key) {
   return state.settings?.componentCatalog?.[key] || {};
 }
 
+function componentKeys() {
+  return allComponentKeys().filter(key => !componentCatalogEntry(key).deleted);
+}
+
 function isComponentActive(key) {
-  return componentCatalogEntry(key).active !== false;
+  const entry = componentCatalogEntry(key);
+  return !entry.deleted && entry.active !== false;
 }
 
 function activeComponentKeys() {
@@ -335,7 +340,7 @@ function activeComponentKeys() {
 }
 
 function applyComponentCatalog(catalog = {}) {
-  componentKeys().forEach(key => {
+  allComponentKeys().forEach(key => {
     const item = catalog[key] || {};
     componentLabels[key] = String(item.label || defaultComponentLabels[key] || key).trim();
     componentEmojis[key] = String(item.emoji || defaultComponentEmojis[key] || '').trim();
@@ -343,8 +348,9 @@ function applyComponentCatalog(catalog = {}) {
 }
 
 function currentComponentCatalog() {
-  const catalog = {};
-  componentKeys().forEach(key => {
+  const catalog = { ...(state.settings?.componentCatalog || {}) };
+  allComponentKeys().forEach(key => {
+    if (catalog[key]?.deleted) return;
     catalog[key] = {
       label: componentLabels[key] || defaultComponentLabels[key],
       emoji: componentEmojis[key] || defaultComponentEmojis[key] || '',
@@ -2517,7 +2523,7 @@ async function saveInvite(event) {
 async function saveComponentCatalog(event) {
   event.preventDefault();
   if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
-  const catalog = {};
+  const catalog = currentComponentCatalog();
   for (const key of componentKeys()) {
     const active = isComponentActive(key);
     const label = $(`[data-component-setting="label"][data-component-key="${key}"]`)?.value.trim();
@@ -2526,7 +2532,8 @@ async function saveComponentCatalog(event) {
     catalog[key] = {
       label: active ? label : (componentLabels[key] || defaultComponentLabels[key]),
       emoji: active ? emoji : (componentEmojis[key] || defaultComponentEmojis[key] || ''),
-      active
+      active,
+      deleted: false
     };
   }
   await services.data.saveSettings({ componentCatalog: catalog });
@@ -2664,7 +2671,11 @@ async function purgeComponentCatalogItem(key) {
   }
   if (!confirm(`¿Borrar definitivamente "${componentLabels[key]}"? Esta acción no se puede deshacer.`)) return;
   const catalog = currentComponentCatalog();
-  delete catalog[key];
+  catalog[key] = {
+    ...(catalog[key] || {}),
+    active: false,
+    deleted: true
+  };
   await services.data.saveSettings({ componentCatalog: catalog });
   await loadData();
   toast('Componente eliminado definitivamente.');
@@ -2675,7 +2686,7 @@ async function resetComponentCatalog() {
   if (!hasRole('admin')) return toast('Solo admins pueden editar componentes.', 'error');
   if (!confirm('¿Restaurar los nombres e iconos base de componentes?')) return;
   const catalog = {};
-  componentKeys().forEach(key => {
+  allComponentKeys().forEach(key => {
     catalog[key] = { label: defaultComponentLabels[key], emoji: defaultComponentEmojis[key] || '', active: true };
   });
   await services.data.saveSettings({ componentCatalog: catalog });
