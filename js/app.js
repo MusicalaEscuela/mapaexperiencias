@@ -1945,7 +1945,8 @@ function startNewExperience(routeId = null) {
     toast('Primero crea una ruta o pide permiso sobre alguna. El mapa necesita dónde poner la experiencia.', 'error');
     return;
   }
-  const nextOrder = experiencesByRoute(route.id).length + 1;
+  const routeExps = experiencesByRoute(route.id);
+  const nextOrder = routeExps.reduce((max, exp) => Math.max(max, Number(exp.order || 0)), 0) + 1;
   state.view = 'experiences';
   state.editingExperienceId = null;
   state.draftExperience = {
@@ -1960,7 +1961,7 @@ function startNewExperience(routeId = null) {
     description: '',
     objective: '',
     prerequisites: '',
-    prerequisiteExperienceIds: [],
+    prerequisiteExperienceIds: routeExps.map(exp => exp.id),
     evidence: '',
     teacherNotes: '',
     internalNotes: '',
@@ -2200,8 +2201,19 @@ function handleResourceDraftChange(event) {
 function handleExperiencePrereqToggle(event) {
   const id = event.currentTarget.dataset.experiencePrereq;
   const set = new Set(state.draftExperience.prerequisiteExperienceIds || []);
-  event.currentTarget.checked ? set.add(id) : set.delete(id);
-  const validIds = new Set(priorExperiencesForDraft(state.draftExperience).map(exp => exp.id));
+  const options = priorExperiencesForDraft(state.draftExperience);
+  const toggled = options.find(exp => exp.id === id);
+  const toggledOrder = Number(toggled?.order || 0);
+  if (event.currentTarget.checked) {
+    // Marcar una experiencia marca también todas las anteriores por orden.
+    set.add(id);
+    options.filter(exp => Number(exp.order || 0) < toggledOrder).forEach(exp => set.add(exp.id));
+  } else {
+    // Desmarcarla desmarca también las posteriores, que dependían de esta.
+    set.delete(id);
+    options.filter(exp => Number(exp.order || 0) > toggledOrder).forEach(exp => set.delete(exp.id));
+  }
+  const validIds = new Set(options.map(exp => exp.id));
   state.draftExperience.prerequisiteExperienceIds = [...set].filter(expId => validIds.has(expId));
   render();
 }
