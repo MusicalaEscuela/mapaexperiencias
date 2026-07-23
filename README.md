@@ -41,6 +41,7 @@ Cada experiencia puede organizarse en componentes:
 - Gestión de invitaciones a docentes.
 - Historial de cambios.
 - Exportación JSON.
+- **Informe para IA**: botón `📄 Informe` (barra superior y Configuración) que arma un consolidado en Markdown, texto plano o JSON, filtrable por arte y ruta, con secciones seleccionables (resumen, estructura, experiencias, saberes por nivel, cobertura, biblioteca, prerrequisitos, alertas, recursos, notas internas, historial). Se descarga o se copia al portapapeles para pegárselo a una IA.
 - Reglas base de seguridad para Firestore.
 
 ## Estructura

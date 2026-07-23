@@ -75,6 +75,22 @@ a { color: var(--teal-strong); }
   overflow-wrap: anywhere;
 }
 
+/* Selector de secciones del informe */
+.report-sections {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255,255,255,.6);
+}
+.report-sections .prereq-option {
+  align-items: start;
+  width: auto;
+  font-weight: 700;
+}
+
 .login-page {
   min-height: 100vh;
   display: grid;

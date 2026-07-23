@@ -88,6 +88,7 @@ let state = {
   editingSkillId: null,
   draftSkill: null,
   expandedSkillIds: new Set(),
+  report: null,
   modal: null
 };
 
@@ -578,11 +579,14 @@ function renderShell() {
             <h1>${escapeHtml(viewTitle())}</h1>
             <p>${escapeHtml(viewDescription())}</p>
           </div>
-          <div class="user-chip">
-            <div class="avatar">${escapeHtml((state.profile.name || state.user.email || '?').charAt(0).toUpperCase())}</div>
-            <div>
-              <div class="strong">${escapeHtml(state.profile.name || 'Usuario')}</div>
-              <div class="small muted">${escapeHtml(readableRole())}</div>
+          <div class="row">
+            <button class="btn teal" data-action="open-report" title="Genera un consolidado para revisar con una IA">📄 Informe</button>
+            <div class="user-chip">
+              <div class="avatar">${escapeHtml((state.profile.name || state.user.email || '?').charAt(0).toUpperCase())}</div>
+              <div>
+                <div class="strong">${escapeHtml(state.profile.name || 'Usuario')}</div>
+                <div class="small muted">${escapeHtml(readableRole())}</div>
+              </div>
             </div>
           </div>
         </section>
@@ -1647,6 +1651,7 @@ function renderSettings() {
         <p><strong>Modo actual:</strong> ${state.mode === 'demo' ? 'Demo local con localStorage' : 'Firebase conectado'}</p>
         <p class="muted">Para conectar Firebase pega tu configuración real en <code>js/firebaseConfig.js</code>, activa Email/Password y publica las reglas de <code>firestore.rules</code>.</p>
         <div class="row">
+          <button class="btn primary" data-action="open-report">📄 Informe para IA</button>
           <button class="btn" data-action="export-json">Exportar JSON</button>
           ${state.mode === 'demo' ? `<button class="btn danger" data-action="reset-demo">Reiniciar demo</button>` : ''}
         </div>
@@ -1748,6 +1753,7 @@ function renderCategoryCatalogSettings() {
 }
 
 function renderModal() {
+  if (state.modal?.type === 'report') return renderReportModal();
   if (state.modal?.type === 'experience') {
     const exp = getExperience(state.modal.id);
     if (!exp) return '';
@@ -1825,6 +1831,7 @@ function bindShellEvents() {
     el.addEventListener('change', handleDraftChange);
   });
   $$('[data-skillref-note]').forEach(el => el.addEventListener('input', handleSkillRefNote));
+  $$('[data-report]').forEach(el => el.addEventListener('change', handleReportConfigChange));
 
   // Drag & drop del tablero de armado.
   $$('.board-card[draggable="true"]').forEach(card => {
@@ -1888,6 +1895,10 @@ async function handleAction(event) {
     if (action === 'add-resource') addResource();
     if (action === 'remove-resource') removeResource(Number(event.currentTarget.dataset.index));
     if (action === 'export-json') exportJson();
+    if (action === 'open-report') openReportModal();
+    if (action === 'report-preset') setReportPreset(id);
+    if (action === 'download-report') downloadReport();
+    if (action === 'copy-report') await copyReport();
     if (action === 'delete-component-catalog-item') deleteComponentCatalogItem(id);
     if (action === 'restore-component-catalog-item') restoreComponentCatalogItem(id);
     if (action === 'purge-component-catalog-item') purgeComponentCatalogItem(id);
@@ -2705,6 +2716,510 @@ async function resetComponentCatalog() {
   await loadData();
   toast('Componentes restaurados.');
   render();
+}
+
+// ---------- Informe consolidado (para revisar con una IA) ----------
+
+const reportSections = [
+  { key: 'guia', label: 'Guía de lectura', hint: 'Explica a la IA cómo está modelado el mapa (arte › ruta › experiencia › saberes).' },
+  { key: 'resumen', label: 'Resumen general', hint: 'Conteos por arte, ruta, estado y componente.' },
+  { key: 'estructura', label: 'Artes y rutas', hint: 'Nombres, descripciones y orden.' },
+  { key: 'experiencias', label: 'Experiencias por ruta', hint: 'Nivel, estado, dificultad, duración y edad sugerida.' },
+  { key: 'detalle', label: 'Detalle pedagógico', hint: 'Descripción, objetivo, prerrequisitos y evidencias de cada experiencia.' },
+  { key: 'saberesExp', label: 'Saberes dentro de cada experiencia', hint: 'Listado por componente, con logro esperado y nota.' },
+  { key: 'cobertura', label: 'Mapa de cobertura', hint: 'Tabla niveles × componentes por ruta.' },
+  { key: 'biblioteca', label: 'Biblioteca de saberes', hint: 'Universo completo por arte y componente, con dificultad y etiquetas.' },
+  { key: 'prerrequisitos', label: 'Prerrequisitos entre saberes', hint: 'Capas topológicas y ciclos detectados.' },
+  { key: 'alertas', label: 'Alertas y vacíos', hint: 'Orden inconsistente, niveles vacíos, saberes sin usar.' },
+  { key: 'recursos', label: 'Recursos', hint: 'Enlaces asociados a cada experiencia.' },
+  { key: 'notas', label: 'Notas internas y para docentes', hint: 'Ojo: puede incluir información sensible.' },
+  { key: 'historial', label: 'Historial de cambios', hint: 'Últimos movimientos registrados en el sistema.' }
+];
+
+function defaultReportConfig() {
+  const sections = {};
+  reportSections.forEach(item => { sections[item.key] = !['notas', 'historial'].includes(item.key); });
+  return {
+    artId: state.selectedArtId !== 'all' ? state.selectedArtId : 'all',
+    routeId: 'all',
+    format: 'markdown',
+    includeArchived: false,
+    sections
+  };
+}
+
+function reportConfig() {
+  if (!state.report) state.report = defaultReportConfig();
+  return state.report;
+}
+
+function reportArts() {
+  const cfg = reportConfig();
+  return state.arts.filter(a => cfg.artId === 'all' || a.id === cfg.artId);
+}
+
+function reportRoutes(artId) {
+  const cfg = reportConfig();
+  return routesByArt(artId).filter(r => cfg.routeId === 'all' || r.id === cfg.routeId);
+}
+
+function reportExperiences(routeId) {
+  const cfg = reportConfig();
+  const list = state.experiences
+    .filter(e => e.routeId === routeId)
+    .filter(e => cfg.includeArchived || e.status !== 'archived')
+    .filter(canSeeExperience);
+  return list.sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+
+function reportScopeLabel() {
+  const cfg = reportConfig();
+  const art = cfg.artId === 'all' ? 'todas las artes' : (getArt(cfg.artId)?.name || 'arte desconocida');
+  const route = cfg.routeId === 'all' ? 'todas las rutas' : (getRoute(cfg.routeId)?.name || 'ruta desconocida');
+  return `${art} · ${route}`;
+}
+
+function md(value) {
+  // Los saltos de línea dentro de un campo rompen las listas de Markdown.
+  return String(value ?? '').replace(/\r?\n+/g, ' ').trim();
+}
+
+function buildReportMarkdown() {
+  const cfg = reportConfig();
+  const on = cfg.sections;
+  const arts = reportArts();
+  const out = [];
+  const push = (...lines) => lines.forEach(line => out.push(line));
+
+  push(`# Informe del Mapa de Experiencias · Musicala`, '');
+  push(`- **Generado:** ${formatDate(nowISO())}`);
+  push(`- **Alcance:** ${reportScopeLabel()}`);
+  push(`- **Experiencias archivadas:** ${cfg.includeArchived ? 'incluidas' : 'excluidas'}`);
+  push(`- **Componentes activos:** ${activeComponentKeys().map(k => componentLabels[k]).join(', ') || '—'}`, '');
+
+  if (on.guia) {
+    push(`## Cómo leer este informe`, '');
+    push(`Musicala organiza su currículo así:`, '');
+    push(`1. **Arte**: la disciplina (violín, piano, canto…).`);
+    push(`2. **Ruta**: un recorrido de aprendizaje dentro de un arte.`);
+    push(`3. **Experiencia**: un nivel progresivo dentro de la ruta (Experiencia I, II, III…).`);
+    push(`4. **Saberes**: unidades de conocimiento de una biblioteca reutilizable por arte. Cada saber tiene un componente (${activeComponentKeys().map(k => componentLabels[k]).join(' / ') || '—'}), una categoría, una dificultad, etiquetas y prerrequisitos con otros saberes.`);
+    push(`5. Armar una experiencia = repartir saberes de la biblioteca en ese nivel. La **cobertura** muestra cuántos saberes de cada componente quedaron en cada nivel; las celdas en cero son vacíos curriculares.`, '');
+    push(`Los estados de una experiencia son: borrador, en revisión, publicada o archivada.`, '');
+  }
+
+  if (on.resumen) {
+    const allExps = arts.flatMap(art => reportRoutes(art.id).flatMap(route => reportExperiences(route.id)));
+    const allSkills = arts.flatMap(art => skillsByArt(art.id));
+    push(`## Resumen general`, '');
+    push(`- Artes en el informe: ${arts.length}`);
+    push(`- Rutas: ${arts.reduce((sum, art) => sum + reportRoutes(art.id).length, 0)}`);
+    push(`- Experiencias: ${allExps.length} (publicadas ${allExps.filter(e => e.status === 'published').length}, en revisión ${allExps.filter(e => e.status === 'review').length}, borradores ${allExps.filter(e => e.status === 'draft').length}, archivadas ${allExps.filter(e => e.status === 'archived').length})`);
+    push(`- Saberes en la biblioteca: ${allSkills.length}`);
+    activeComponentKeys().forEach(key => {
+      push(`  - ${componentLabels[key]}: ${allSkills.filter(s => s.component === key).length} saber(es)`);
+    });
+    push('');
+    arts.forEach(art => {
+      const routes = reportRoutes(art.id);
+      const exps = routes.flatMap(r => reportExperiences(r.id));
+      push(`- **${md(art.name)}**: ${routes.length} ruta(s), ${exps.length} experiencia(s), ${skillsByArt(art.id).length} saber(es).`);
+    });
+    push('');
+  }
+
+  arts.forEach(art => {
+    const routes = reportRoutes(art.id);
+    if (on.estructura || on.experiencias || on.detalle || on.saberesExp || on.cobertura || on.recursos || on.notas) {
+      push(`## Arte: ${md(art.name)}`, '');
+      if (on.estructura) {
+        if (art.description) push(`${md(art.description)}`, '');
+        push(`Rutas (${routes.length}):`, '');
+        routes.forEach(route => {
+          push(`- **${md(route.name)}** — ${reportExperiences(route.id).length} experiencia(s), ${skillsByRoute(route).length} saber(es) asignados.${route.description ? ` ${md(route.description)}` : ''}`);
+        });
+        push('');
+      }
+    }
+
+    routes.forEach(route => {
+      const exps = reportExperiences(route.id);
+      if (!(on.experiencias || on.detalle || on.saberesExp || on.cobertura || on.recursos || on.notas)) return;
+      push(`### Ruta: ${md(route.name)}`, '');
+      if (on.cobertura && exps.length) {
+        const comps = activeComponentKeys();
+        push(`**Cobertura (saberes por nivel y componente)**`, '');
+        push(`| Nivel | ${comps.map(c => componentLabels[c]).join(' | ')} | Total |`);
+        push(`| --- | ${comps.map(() => '---').join(' | ')} | --- |`);
+        exps.forEach(exp => {
+          const counts = experienceComponentCounts(exp);
+          const total = comps.reduce((sum, c) => sum + (counts[c] || 0), 0);
+          push(`| ${md(experienceLabel(exp))} | ${comps.map(c => counts[c] || 0).join(' | ')} | ${total} |`);
+        });
+        push(`| _Disponibles en biblioteca_ | ${comps.map(c => skillsByRoute(route).filter(s => s.component === c).length).join(' | ')} | ${skillsByRoute(route).length} |`, '');
+      }
+
+      if (!exps.length) { push(`_Esta ruta todavía no tiene experiencias._`, ''); return; }
+
+      exps.forEach(exp => {
+        push(`#### ${md(experienceLabel(exp))}`, '');
+        if (on.experiencias) {
+          push(`- Estado: ${statusLabels[exp.status] || exp.status || '—'}`);
+          push(`- Dificultad: ${difficultyLabels[exp.difficulty] || exp.difficulty || '—'}`);
+          if (exp.estimatedDuration) push(`- Duración estimada: ${md(exp.estimatedDuration)}`);
+          if (exp.suggestedAge) push(`- Edad sugerida: ${md(exp.suggestedAge)}`);
+          push('');
+        }
+        if (on.detalle) {
+          push(`- **Descripción:** ${md(exp.description) || '—'}`);
+          push(`- **Objetivo:** ${md(exp.objective) || '—'}`);
+          const prevNames = prerequisiteExperienceNames(exp.prerequisiteExperienceIds || []);
+          push(`- **Prerrequisitos:** ${[prevNames.length ? `experiencias previas: ${prevNames.join(', ')}` : '', md(exp.prerequisites)].filter(Boolean).join(' · ') || '—'}`);
+          push(`- **Evidencias:** ${md(exp.evidence) || '—'}`, '');
+        }
+        if (on.saberesExp) {
+          const comps = activeComponentKeys();
+          const totalItems = comps.reduce((sum, c) => sum + experienceComponentItems(exp, c).length, 0);
+          push(`**Saberes de este nivel** (${totalItems})`, '');
+          if (!totalItems) push(`_Sin saberes asignados._`, '');
+          comps.forEach(key => {
+            const items = experienceComponentItems(exp, key);
+            if (!items.length) return;
+            push(`- ${componentLabels[key]}:`);
+            items.forEach(item => {
+              const extra = [md(item.achievement) ? `logro: ${md(item.achievement)}` : '', md(item.note) ? `nota: ${md(item.note)}` : ''].filter(Boolean).join(' · ');
+              push(`  - ${md(item.title)}${extra ? ` — ${extra}` : ''}`);
+            });
+          });
+          push('');
+        }
+        if (on.recursos) {
+          const resources = exp.resources || [];
+          push(`**Recursos:** ${resources.length ? '' : '—'}`);
+          resources.forEach(r => push(`- ${md(r.title || r.url)}${r.type ? ` (${md(r.type)})` : ''}: ${md(r.url)}`));
+          push('');
+        }
+        if (on.notas) {
+          push(`- **Notas para docentes:** ${md(exp.teacherNotes) || '—'}`);
+          push(`- **Notas internas:** ${md(exp.internalNotes) || '—'}`, '');
+        }
+      });
+    });
+  });
+
+  if (on.biblioteca) {
+    push(`## Biblioteca de saberes`, '');
+    arts.forEach(art => {
+      const skills = skillsByArt(art.id);
+      push(`### ${md(art.name)} (${skills.length} saberes)`, '');
+      if (!skills.length) { push(`_Biblioteca vacía._`, ''); return; }
+      activeComponentKeys().forEach(key => {
+        const group = skills.filter(s => s.component === key);
+        if (!group.length) return;
+        push(`**${componentLabels[key]}** (${group.length})`, '');
+        group
+          .slice()
+          .sort((a, b) => (a.title || '').localeCompare(b.title || ''))
+          .forEach(skill => {
+            const meta = [
+              `categoría: ${categoryLabel(skill)}`,
+              `dificultad: ${difficultyLabels[skill.difficulty] || skill.difficulty || '—'}`,
+              `rutas: ${skillRouteLabels(skill).join(', ')}`,
+              (skill.tags || []).length ? `etiquetas: ${(skill.tags || []).join(', ')}` : '',
+              (skill.prerequisites || []).length ? `prerrequisitos: ${(skill.prerequisites || []).map(id => getSkill(id)?.title || 'saber eliminado').join(', ')}` : ''
+            ].filter(Boolean).join(' · ');
+            push(`- **${md(skill.title)}** — ${meta}`);
+            if (md(skill.achievement)) push(`  - Logro: ${md(skill.achievement)}`);
+            if (md(skill.description)) push(`  - Descripción: ${md(skill.description)}`);
+          });
+        push('');
+      });
+    });
+  }
+
+  if (on.prerrequisitos) {
+    push(`## Prerrequisitos entre saberes`, '');
+    arts.forEach(art => {
+      const skills = skillsByArt(art.id);
+      if (!skills.length) return;
+      const { layers, cyclic } = topoLayers(skills);
+      push(`### ${md(art.name)}`, '');
+      layers.forEach((layer, idx) => {
+        push(`- Capa ${idx + 1}: ${layer.map(s => md(s.title)).join(', ')}`);
+      });
+      if (cyclic.length) push(`- ⚠️ Saberes en dependencia circular: ${cyclic.map(s => md(s.title)).join(', ')}`);
+      push('');
+    });
+  }
+
+  if (on.alertas) {
+    push(`## Alertas y vacíos detectados`, '');
+    const alerts = [];
+    arts.forEach(art => {
+      reportRoutes(art.id).forEach(route => {
+        routeOrderingIssues(route).forEach(issue => {
+          alerts.push(issue.type === 'missing'
+            ? `[${md(route.name)}] "${md(issue.skill)}" (${md(issue.expLabel)}) requiere "${md(issue.pre)}", que no aparece en ninguna experiencia de la ruta.`
+            : `[${md(route.name)}] "${md(issue.skill)}" está en ${md(issue.expLabel)} pero su prerrequisito "${md(issue.pre)}" aparece después, en ${md(issue.preExpLabel)}.`);
+        });
+        const exps = reportExperiences(route.id);
+        if (!exps.length) alerts.push(`[${md(route.name)}] La ruta no tiene experiencias.`);
+        exps.forEach(exp => {
+          const counts = experienceComponentCounts(exp);
+          const total = activeComponentKeys().reduce((sum, c) => sum + (counts[c] || 0), 0);
+          if (!total) alerts.push(`[${md(route.name)}] ${md(experienceLabel(exp))} no tiene saberes asignados.`);
+          if (!md(exp.objective)) alerts.push(`[${md(route.name)}] ${md(experienceLabel(exp))} no tiene objetivo escrito.`);
+          if (!md(exp.evidence)) alerts.push(`[${md(route.name)}] ${md(experienceLabel(exp))} no tiene evidencias definidas.`);
+        });
+        const used = new Set(exps.flatMap(e => (e.skillRefs || []).map(r => r.skillId)));
+        const unused = skillsByRoute(route).filter(s => !used.has(s.id));
+        if (unused.length) alerts.push(`[${md(route.name)}] ${unused.length} saber(es) asignados a la ruta no están en ninguna experiencia: ${unused.map(s => md(s.title)).join(', ')}.`);
+      });
+      skillsByArt(art.id).forEach(skill => {
+        const dangling = (skill.prerequisites || []).filter(id => !getSkill(id));
+        if (dangling.length) alerts.push(`[${md(art.name)}] "${md(skill.title)}" tiene ${dangling.length} prerrequisito(s) apuntando a saberes eliminados.`);
+      });
+    });
+    if (!alerts.length) push(`Sin alertas: no encontré vacíos evidentes en el alcance seleccionado.`, '');
+    else alerts.forEach(a => push(`- ${a}`));
+    push('');
+  }
+
+  if (on.historial) {
+    push(`## Historial de cambios`, '');
+    const logs = state.logs || [];
+    if (!logs.length) push(`_Sin registros._`, '');
+    logs.slice(0, 100).forEach(log => {
+      push(`- ${formatDate(log.createdAt || log.at)} · ${md(log.actorEmail || log.actor || '')} · ${md(log.action || log.type || '')} · ${md(log.detail || log.message || '')}`);
+    });
+    push('');
+  }
+
+  push(`---`, '');
+  push(`_Fin del informe. Si vas a analizarlo con una IA: los vacíos importantes suelen estar en la sección de cobertura y en la de alertas._`);
+
+  return out.join('\n');
+}
+
+function buildReportJson() {
+  const cfg = reportConfig();
+  const on = cfg.sections;
+  const arts = reportArts();
+  const payload = {
+    generatedAt: nowISO(),
+    scope: { artId: cfg.artId, routeId: cfg.routeId, includeArchived: cfg.includeArchived, label: reportScopeLabel() },
+    components: activeComponentKeys().map(key => ({ key, label: componentLabels[key], emoji: componentEmojis[key] })),
+    arts: arts.map(art => ({
+      id: art.id,
+      name: art.name,
+      description: art.description || '',
+      routes: reportRoutes(art.id).map(route => ({
+        id: route.id,
+        name: route.name,
+        description: route.description || '',
+        experiences: reportExperiences(route.id).map(exp => {
+          const item = {
+            id: exp.id,
+            label: exp.label,
+            name: exp.name,
+            order: exp.order,
+            status: exp.status,
+            difficulty: exp.difficulty
+          };
+          if (on.experiencias) Object.assign(item, { estimatedDuration: exp.estimatedDuration || '', suggestedAge: exp.suggestedAge || '' });
+          if (on.detalle) Object.assign(item, {
+            description: exp.description || '',
+            objective: exp.objective || '',
+            prerequisites: exp.prerequisites || '',
+            prerequisiteExperiences: prerequisiteExperienceNames(exp.prerequisiteExperienceIds || []),
+            evidence: exp.evidence || ''
+          });
+          if (on.saberesExp) item.skills = activeComponentKeys().flatMap(key =>
+            experienceComponentItems(exp, key).map(entry => ({ component: key, ...entry })));
+          if (on.cobertura) item.coverage = experienceComponentCounts(exp);
+          if (on.recursos) item.resources = exp.resources || [];
+          if (on.notas) Object.assign(item, { teacherNotes: exp.teacherNotes || '', internalNotes: exp.internalNotes || '' });
+          return item;
+        })
+      })),
+      skills: on.biblioteca ? skillsByArt(art.id).map(skill => ({
+        id: skill.id,
+        title: skill.title,
+        component: skill.component,
+        category: skillCategory(skill),
+        difficulty: skill.difficulty,
+        description: skill.description || '',
+        achievement: skill.achievement || '',
+        tags: skill.tags || [],
+        routes: skillRouteLabels(skill),
+        prerequisites: on.prerrequisitos ? (skill.prerequisites || []).map(id => getSkill(id)?.title || null) : undefined
+      })) : undefined
+    }))
+  };
+  if (on.historial) payload.logs = (state.logs || []).slice(0, 100);
+  return JSON.stringify(payload, null, 2);
+}
+
+function buildReportText() {
+  return buildReportMarkdown()
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/\*\*/g, '')
+    .replace(/^_|_$/gm, '');
+}
+
+function buildReport() {
+  const cfg = reportConfig();
+  if (cfg.format === 'json') return { content: buildReportJson(), ext: 'json', mime: 'application/json' };
+  if (cfg.format === 'texto') return { content: buildReportText(), ext: 'txt', mime: 'text/plain' };
+  return { content: buildReportMarkdown(), ext: 'md', mime: 'text/markdown' };
+}
+
+function reportFileName(ext) {
+  const cfg = reportConfig();
+  const scope = cfg.routeId !== 'all'
+    ? slugify(getRoute(cfg.routeId)?.name || 'ruta')
+    : (cfg.artId !== 'all' ? slugify(getArt(cfg.artId)?.name || 'arte') : 'general');
+  return `informe-mapa-crea-${scope}-${new Date().toISOString().slice(0, 10)}.${ext}`;
+}
+
+function downloadReport() {
+  const { content, ext, mime } = buildReport();
+  downloadBlob(content, reportFileName(ext), mime);
+  toast('Informe descargado. Ahora sí, pégaselo a la IA y que opine.');
+}
+
+async function copyReport() {
+  const { content } = buildReport();
+  try {
+    await navigator.clipboard.writeText(content);
+    toast(`Informe copiado (${content.length.toLocaleString('es-CO')} caracteres).`);
+  } catch (error) {
+    console.error(error);
+    toast('El navegador no me dejó copiar. Usa el botón de descargar.', 'error');
+  }
+}
+
+function downloadBlob(content, filename, mime) {
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function openReportModal() {
+  if (!state.report) state.report = defaultReportConfig();
+  state.modal = { type: 'report' };
+  render();
+}
+
+function handleReportConfigChange(event) {
+  const el = event.currentTarget;
+  const key = el.dataset.report;
+  const cfg = reportConfig();
+  if (key === 'section') {
+    cfg.sections[el.dataset.sectionKey] = el.checked;
+  } else if (el.type === 'checkbox') {
+    cfg[key] = el.checked;
+  } else {
+    cfg[key] = el.value;
+    if (key === 'artId') cfg.routeId = 'all';
+  }
+  render();
+}
+
+function setReportPreset(preset) {
+  const cfg = reportConfig();
+  const all = value => reportSections.forEach(item => { cfg.sections[item.key] = value; });
+  if (preset === 'todo') all(true);
+  if (preset === 'nada') all(false);
+  if (preset === 'pedagogico') {
+    all(false);
+    ['guia', 'resumen', 'experiencias', 'detalle', 'saberesExp', 'cobertura', 'alertas'].forEach(k => { cfg.sections[k] = true; });
+  }
+  if (preset === 'curricular') {
+    all(false);
+    ['guia', 'resumen', 'estructura', 'cobertura', 'biblioteca', 'prerrequisitos', 'alertas'].forEach(k => { cfg.sections[k] = true; });
+  }
+  render();
+}
+
+function renderReportModal() {
+  const cfg = reportConfig();
+  const artOptions = [`<option value="all">Todas las artes</option>`,
+    ...state.arts.map(a => `<option value="${a.id}" ${cfg.artId === a.id ? 'selected' : ''}>${escapeHtml(a.name)}</option>`)].join('');
+  const routeOptions = [`<option value="all">Todas las rutas</option>`,
+    ...routesByArt(cfg.artId).map(r => `<option value="${r.id}" ${cfg.routeId === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`)].join('');
+  const preview = buildReport();
+  const chars = preview.content.length;
+
+  return `
+    <div class="modal-backdrop" data-action="close-modal">
+      <article class="modal stack" onclick="event.stopPropagation()">
+        <div class="row-between">
+          <div>
+            <h2>Informe para revisar con una IA</h2>
+            <p class="muted small" style="margin-top:4px">Elige el alcance y qué información incluir. Descárgalo o cópialo y pégaselo a la IA con la que quieras conversar.</p>
+          </div>
+          <button class="btn" data-action="close-modal">Cerrar</button>
+        </div>
+
+        <div class="grid cols-2">
+          <div class="form-field">
+            <label>Arte</label>
+            <select data-report="artId">${artOptions}</select>
+          </div>
+          <div class="form-field">
+            <label>Ruta</label>
+            <select data-report="routeId">${routeOptions}</select>
+          </div>
+          <div class="form-field">
+            <label>Formato</label>
+            <select data-report="format">
+              <option value="markdown" ${cfg.format === 'markdown' ? 'selected' : ''}>Markdown (.md) · recomendado para IA</option>
+              <option value="texto" ${cfg.format === 'texto' ? 'selected' : ''}>Texto plano (.txt)</option>
+              <option value="json" ${cfg.format === 'json' ? 'selected' : ''}>JSON estructurado (.json)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>Opciones</label>
+            <label class="prereq-option">
+              <input type="checkbox" data-report="includeArchived" ${cfg.includeArchived ? 'checked' : ''} />
+              <span>Incluir experiencias archivadas</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="row-between">
+          <strong>Qué incluir</strong>
+          <div class="row">
+            <button class="btn small" type="button" data-action="report-preset" data-id="pedagogico">Enfoque pedagógico</button>
+            <button class="btn small" type="button" data-action="report-preset" data-id="curricular">Enfoque curricular</button>
+            <button class="btn small" type="button" data-action="report-preset" data-id="todo">Todo</button>
+            <button class="btn small" type="button" data-action="report-preset" data-id="nada">Nada</button>
+          </div>
+        </div>
+
+        <div class="prereq-list report-sections">
+          ${reportSections.map(item => `
+            <label class="prereq-option">
+              <input type="checkbox" data-report="section" data-section-key="${item.key}" ${cfg.sections[item.key] ? 'checked' : ''} />
+              <span><strong>${escapeHtml(item.label)}</strong><br /><span class="small muted">${escapeHtml(item.hint)}</span></span>
+            </label>
+          `).join('')}
+        </div>
+
+        <p class="small muted">Tamaño aproximado: ${chars.toLocaleString('es-CO')} caracteres (~${Math.ceil(chars / 4).toLocaleString('es-CO')} tokens).</p>
+
+        <div class="row">
+          <button class="btn primary" type="button" data-action="download-report">Descargar informe</button>
+          <button class="btn teal" type="button" data-action="copy-report">Copiar al portapapeles</button>
+        </div>
+      </article>
+    </div>
+  `;
 }
 
 function exportJson() {
