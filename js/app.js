@@ -387,7 +387,7 @@ function experienceComponentItems(exp, component) {
   if (exp.skillRefs && exp.skillRefs.length) {
     return resolveSkillRefs(exp.skillRefs)
       .filter(({ skill }) => skill.component === component)
-      .map(({ ref, skill }) => ({ title: skill.title, achievement: skill.achievement, note: ref.note }));
+      .map(({ ref, skill }) => ({ skillId: skill.id, title: skill.title, achievement: skill.achievement, note: ref.note }));
   }
   return exp.components?.[component] || [];
 }
@@ -956,6 +956,7 @@ function renderSkillEditor() {
 
 // ---------- Tablero de armado (Fase 3) ----------
 
+let compareDrag = null; // { skillId, source } al mover un saber entre experiencias en el comparador.
 let boardDrag = null; // { skillId, source } durante un arrastre. Fuera del estado para no re-renderizar.
 
 function boardData(route) {
@@ -1531,7 +1532,7 @@ function renderCompareTable(exps) {
       <table class="compare-table">
         <thead><tr><th>Componente</th>${exps.map(exp => `<th>${escapeHtml(exp.label)}<br><span class="small muted">${escapeHtml(exp.name)}</span></th>`).join('')}</tr></thead>
         <tbody>
-          ${rows.map(row => `<tr><th>${componentEmojis[row]} ${componentLabels[row]}</th>${exps.map(exp => `<td>${renderCompareCell(experienceComponentItems(exp, row))}</td>`).join('')}</tr>`).join('')}
+          ${rows.map(row => `<tr><th>${componentEmojis[row]} ${componentLabels[row]}</th>${exps.map(exp => `<td class="compare-cell" data-move-target="${exp.id}" data-component="${row}">${renderCompareCell(experienceComponentItems(exp, row), exp, exps)}</td>`).join('')}</tr>`).join('')}
           <tr><th>Objetivo</th>${exps.map(exp => `<td>${escapeHtml(exp.objective || 'Sin objetivo')}</td>`).join('')}</tr>
           <tr><th>Evidencia</th>${exps.map(exp => `<td>${escapeHtml(exp.evidence || 'Sin evidencia')}</td>`).join('')}</tr>
         </tbody>
@@ -1540,9 +1541,24 @@ function renderCompareTable(exps) {
   `;
 }
 
-function renderCompareCell(items) {
+function renderCompareCell(items, exp, exps = []) {
+  const canMove = exp ? canEditExperience(exp) : false;
   if (!items.length) return '<span class="muted">Sin saberes</span>';
-  return `<ul class="compare-cell-list">${items.map(item => `<li><strong>${escapeHtml(item.title || 'Sin título')}</strong>${item.achievement ? `<br><span class="small muted">${escapeHtml(item.achievement)}</span>` : ''}${item.note ? `<br><span class="small muted">📝 ${escapeHtml(item.note)}</span>` : ''}</li>`).join('')}</ul>`;
+  return `<ul class="compare-cell-list">${items.map(item => {
+    const movable = canMove && item.skillId;
+    const targets = movable ? exps.filter(other => other.id !== exp.id && canEditExperience(other)) : [];
+    return `
+      <li class="compare-item ${movable ? 'movable' : ''}" ${movable ? `draggable="true" data-move-skill="${item.skillId}" data-move-source="${exp.id}"` : ''}>
+        <strong>${escapeHtml(item.title || 'Sin título')}</strong>
+        ${item.achievement ? `<br><span class="small muted">${escapeHtml(item.achievement)}</span>` : ''}
+        ${item.note ? `<br><span class="small muted">📝 ${escapeHtml(item.note)}</span>` : ''}
+        ${targets.length ? `
+          <select class="compare-move-select" data-move-skill-id="${item.skillId}" data-move-from="${exp.id}" title="Mover este saber a otra experiencia">
+            <option value="">↔ Mover a…</option>
+            ${targets.map(other => `<option value="${other.id}">${escapeHtml(other.label || other.name)}</option>`).join('')}
+          </select>` : ''}
+      </li>`;
+  }).join('')}</ul>`;
 }
 
 function renderStructure() {
@@ -1848,6 +1864,38 @@ function bindShellEvents() {
       event.preventDefault();
       col.classList.remove('drop-hover');
       await handleBoardDrop(col.dataset.target);
+    });
+  });
+  // Mover saberes entre experiencias desde el comparador de ruta.
+  $$('.compare-item.movable').forEach(item => {
+    item.addEventListener('dragstart', event => {
+      compareDrag = { skillId: item.dataset.moveSkill, source: item.dataset.moveSource };
+      item.classList.add('dragging');
+      event.dataTransfer.effectAllowed = 'move';
+    });
+    item.addEventListener('dragend', () => item.classList.remove('dragging'));
+  });
+  $$('td.compare-cell').forEach(cell => {
+    cell.addEventListener('dragover', event => {
+      if (!compareDrag || compareDrag.source === cell.dataset.moveTarget) return;
+      event.preventDefault();
+      cell.classList.add('drop-hover');
+    });
+    cell.addEventListener('dragleave', () => cell.classList.remove('drop-hover'));
+    cell.addEventListener('drop', async event => {
+      event.preventDefault();
+      cell.classList.remove('drop-hover');
+      const drag = compareDrag;
+      compareDrag = null;
+      if (!drag) return;
+      await moveSkillBetweenExperiences(drag.skillId, drag.source, cell.dataset.moveTarget);
+    });
+  });
+  $$('.compare-move-select').forEach(select => {
+    select.addEventListener('change', async event => {
+      const targetId = event.currentTarget.value;
+      if (!targetId) return;
+      await moveSkillBetweenExperiences(event.currentTarget.dataset.moveSkillId, event.currentTarget.dataset.moveFrom, targetId);
     });
   });
   $$('[data-resource-field]').forEach(el => el.addEventListener('input', handleResourceDraftChange));
@@ -2304,6 +2352,33 @@ async function handleBoardDrop(target) {
     }
     await loadData();
     toast(target === 'library' ? 'Saber devuelto a la biblioteca.' : 'Saber colocado en el nivel.');
+    render();
+  } catch (error) {
+    console.error(error);
+    toast(error.message || 'No se pudo mover el saber.', 'error');
+  }
+}
+
+// Mueve un saber de una experiencia a otra conservando su nota. Usado por el comparador de ruta.
+async function moveSkillBetweenExperiences(skillId, sourceId, targetId) {
+  if (!skillId || !sourceId || !targetId || sourceId === targetId) return;
+  const src = getExperience(sourceId);
+  const tgt = getExperience(targetId);
+  if (!src || !tgt) return toast('No encontré alguna de las experiencias.', 'error');
+  if (!canEditExperience(src) || !canEditExperience(tgt)) {
+    return toast('No tienes permiso para mover saberes en estas experiencias.', 'error');
+  }
+  const skill = getSkill(skillId);
+  const existing = (src.skillRefs || []).find(r => r.skillId === skillId);
+  if (!existing) return toast('Ese saber ya no está en la experiencia de origen.', 'error');
+  if ((tgt.skillRefs || []).some(r => r.skillId === skillId)) {
+    return toast(`"${skill?.title || 'El saber'}" ya existe en ${tgt.label || tgt.name}.`, 'error');
+  }
+  try {
+    await services.data.saveExperience(boardExpPayload(src, (src.skillRefs || []).filter(r => r.skillId !== skillId)));
+    await services.data.saveExperience(boardExpPayload(tgt, [...(tgt.skillRefs || []), { skillId, note: existing.note || '' }]));
+    await loadData();
+    toast(`"${skill?.title || 'Saber'}" movido a ${tgt.label || tgt.name}.`);
     render();
   } catch (error) {
     console.error(error);
