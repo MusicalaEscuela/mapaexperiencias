@@ -9,6 +9,15 @@ toastZone.className = 'toast-zone';
 document.body.appendChild(toastZone);
 
 const emptyComponents = () => ({ tecnica: [], teorico: [], repertorio: [], creativo: [] });
+const personalRepertoireDefaults = () => ({
+  title: 'Canciones personales',
+  focus: 'Avanzar de forma gradual en una canción elegida por el estudiante, conectando sus gustos con los saberes de esta experiencia.',
+  evidence: 'Se reconoce un avance concreto: una sección, fragmento, recurso técnico o interpretación de la canción personal.'
+});
+
+function personalRepertoireFor(exp = {}) {
+  return { ...personalRepertoireDefaults(), ...(exp.personalRepertoire || {}) };
+}
 const componentLabels = {
   tecnica: 'Técnica',
   teorico: 'Teórico',
@@ -741,6 +750,7 @@ function renderExperienceCard(exp) {
       </div>
       <p class="muted" style="margin:0">${escapeHtml(exp.objective || exp.description || 'Sin objetivo escrito todavía.')}</p>
       ${prereqNames.length ? `<p class="small muted" style="margin:0">&rarr; Requiere: ${prereqNames.map(escapeHtml).join(', ')}</p>` : ''}
+      <div class="personal-repertoire-preview">🎵 <strong>${escapeHtml(personalRepertoireFor(exp).title)}</strong><span>Siempre presente</span></div>
       <div class="component-grid">
         ${activeComponentKeys().map(key => `<div class="component-pill" data-component="${key}"><strong>${componentEmojis[key]} ${componentLabels[key]}</strong><span>${counts[key]} saber(es)</span></div>`).join('')}
       </div>
@@ -1376,6 +1386,7 @@ function renderExperienceEditor() {
           <div class="form-field"><label>Recomendaciones docentes</label><textarea data-draft="teacherNotes" placeholder="Tips de enseñanza, advertencias, secuencia sugerida">${escapeHtml(d.teacherNotes)}</textarea></div>
           <div class="form-field"><label>Observaciones internas</label><textarea data-draft="internalNotes" placeholder="Notas internas de coordinación">${escapeHtml(d.internalNotes)}</textarea></div>
         </div>
+        ${renderPersonalRepertoireEditor()}
         <div class="form-field"><label>Estado</label><select data-draft="status">${Object.entries(statusLabels).map(([key, label]) => `<option value="${key}" ${d.status === key ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
       </form>
       <aside class="stack-lg">
@@ -1383,6 +1394,21 @@ function renderExperienceEditor() {
         ${renderResourcesEditor()}
       </aside>
     </div>
+  `;
+}
+
+function renderPersonalRepertoireEditor() {
+  const personal = personalRepertoireFor(state.draftExperience);
+  return `
+    <section class="personal-repertoire-editor">
+      <div>
+        <div class="eyebrow">Saber transversal · siempre incluido</div>
+        <h3>🎵 ${escapeHtml(personal.title)}</h3>
+        <p class="small">Las canciones elegidas por el estudiante avanzan a su propio ritmo y no tienen que coincidir con el repertorio de la experiencia.</p>
+      </div>
+      <div class="form-field"><label>Cómo se conecta con esta experiencia</label><textarea data-personal-repertoire="focus" placeholder="Ej.: aplicar el patrón rítmico, montar el coro o resolver una dificultad técnica.">${escapeHtml(personal.focus)}</textarea></div>
+      <div class="form-field"><label>Avance o evidencia esperada</label><textarea data-personal-repertoire="evidence" placeholder="¿Qué avance concreto se busca sacar de su lista personal?">${escapeHtml(personal.evidence)}</textarea></div>
+    </section>
   `;
 }
 
@@ -1792,6 +1818,7 @@ function renderModal() {
             <div><h3>Prerrequisitos</h3><p class="muted">${escapeHtml([prereqExperienceNames.length ? `Experiencias previas: ${prereqExperienceNames.join(', ')}` : '', exp.prerequisites || ''].filter(Boolean).join(' · ') || 'Sin prerrequisitos')}</p></div>
             <div><h3>Evidencias</h3><p class="muted">${escapeHtml(exp.evidence || 'Sin evidencias')}</p></div>
           </div>
+          ${renderPersonalRepertoireDetail(exp)}
           ${Object.entries(componentLabels).map(([key, label]) => `<h3>${componentEmojis[key]} ${label}</h3>${renderCompareCell(experienceComponentItems(exp, key))}`).join('')}
           <h3>Recursos</h3>
           ${resources.length ? resources.map(r => `<p>🔗 <a href="${escapeHtml(r.url)}" target="_blank" rel="noreferrer">${escapeHtml(r.title || r.url)}</a> <span class="small muted">${escapeHtml(r.type || '')}</span></p>`).join('') : '<p class="muted">Sin recursos.</p>'}
@@ -1801,6 +1828,18 @@ function renderModal() {
     `;
   }
   return '';
+}
+
+function renderPersonalRepertoireDetail(exp) {
+  const personal = personalRepertoireFor(exp);
+  return `
+    <section class="personal-repertoire-detail">
+      <div class="eyebrow">Saber transversal · siempre incluido</div>
+      <h3>🎵 ${escapeHtml(personal.title)}</h3>
+      <p><strong>Conexión en esta experiencia:</strong> ${escapeHtml(personal.focus)}</p>
+      <p class="muted"><strong>Avance esperado:</strong> ${escapeHtml(personal.evidence)}</p>
+    </section>
+  `;
 }
 
 function renderNoAccess() {
@@ -1845,6 +1884,10 @@ function bindShellEvents() {
   $$('[data-draft]').forEach(el => {
     el.addEventListener('input', handleDraftChange);
     el.addEventListener('change', handleDraftChange);
+  });
+  $$('[data-personal-repertoire]').forEach(el => {
+    el.addEventListener('input', handlePersonalRepertoireChange);
+    el.addEventListener('change', handlePersonalRepertoireChange);
   });
   $$('[data-skillref-note]').forEach(el => el.addEventListener('input', handleSkillRefNote));
   $$('[data-report]').forEach(el => el.addEventListener('change', handleReportConfigChange));
@@ -2024,6 +2067,7 @@ function startNewExperience(routeId = null) {
     evidence: '',
     teacherNotes: '',
     internalNotes: '',
+    personalRepertoire: personalRepertoireDefaults(),
     status: 'draft',
     components: emptyComponents(),
     skillRefs: [],
@@ -2039,7 +2083,7 @@ function startEditExperience(id) {
   state.modal = null;
   state.view = 'experiences';
   state.editingExperienceId = id;
-  state.draftExperience = JSON.parse(JSON.stringify({ ...exp, components: { ...emptyComponents(), ...(exp.components || {}) }, skillRefs: exp.skillRefs || [], prerequisiteExperienceIds: exp.prerequisiteExperienceIds || [], resources: exp.resources || [] }));
+  state.draftExperience = JSON.parse(JSON.stringify({ ...exp, personalRepertoire: personalRepertoireFor(exp), components: { ...emptyComponents(), ...(exp.components || {}) }, skillRefs: exp.skillRefs || [], prerequisiteExperienceIds: exp.prerequisiteExperienceIds || [], resources: exp.resources || [] }));
   render();
 }
 
@@ -2244,6 +2288,12 @@ function handleDraftChange(event) {
   }
 }
 
+function handlePersonalRepertoireChange(event) {
+  const key = event.currentTarget.dataset.personalRepertoire;
+  state.draftExperience.personalRepertoire = personalRepertoireFor(state.draftExperience);
+  state.draftExperience.personalRepertoire[key] = event.currentTarget.value;
+}
+
 function handleComponentDraftChange(event) {
   const component = event.currentTarget.dataset.component;
   const index = Number(event.currentTarget.dataset.index);
@@ -2423,6 +2473,7 @@ async function saveExperience(event) {
     updatedBy: state.user.uid,
     updatedByEmail: state.user.email,
     prerequisiteExperienceIds: [...new Set(d.prerequisiteExperienceIds || [])].filter(id => validPrereqExperienceIds.has(id)),
+    personalRepertoire: Object.fromEntries(Object.entries(personalRepertoireFor(d)).map(([key, value]) => [key, String(value || '').trim()])),
     components: normalizeComponents(d.components),
     skillRefs: uniqueSkillRefs(d.skillRefs || [])
       .filter(r => getSkill(r.skillId))
@@ -2951,6 +3002,9 @@ function buildReportMarkdown() {
           const prevNames = prerequisiteExperienceNames(exp.prerequisiteExperienceIds || []);
           push(`- **Prerrequisitos:** ${[prevNames.length ? `experiencias previas: ${prevNames.join(', ')}` : '', md(exp.prerequisites)].filter(Boolean).join(' · ') || '—'}`);
           push(`- **Evidencias:** ${md(exp.evidence) || '—'}`, '');
+          const personal = personalRepertoireFor(exp);
+          push(`- **${md(personal.title)} (saber transversal):** ${md(personal.focus) || '—'}`);
+          push(`- **Avance esperado de la lista personal:** ${md(personal.evidence) || '—'}`, '');
         }
         if (on.saberesExp) {
           const comps = activeComponentKeys();
@@ -3107,7 +3161,8 @@ function buildReportJson() {
             objective: exp.objective || '',
             prerequisites: exp.prerequisites || '',
             prerequisiteExperiences: prerequisiteExperienceNames(exp.prerequisiteExperienceIds || []),
-            evidence: exp.evidence || ''
+            evidence: exp.evidence || '',
+            personalRepertoire: personalRepertoireFor(exp)
           });
           if (on.saberesExp) item.skills = activeComponentKeys().flatMap(key =>
             experienceComponentItems(exp, key).map(entry => ({ component: key, ...entry })));
