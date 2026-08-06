@@ -74,6 +74,26 @@ a { color: var(--teal-strong); }
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.prereq-experience-picker { gap: 8px; }
+.prereq-picker-help { margin: 0 0 2px; }
+.prereq-experience-details {
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+.prereq-experience-details summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  color: var(--teal-strong);
+  font-size: .9rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.prereq-experience-earlier {
+  margin-top: 10px;
+  padding-left: 2px;
+}
 
 /* Selector de secciones del informe */
 .report-sections {

@@ -1418,14 +1418,24 @@ function renderPrerequisiteExperiencePicker() {
   if (!d.routeId) return `<p class="small muted">Elige una ruta para ver experiencias previas disponibles.</p>`;
   if (!options.length) return `<p class="small muted">Esta es la primera experiencia de la ruta, así que no hay experiencias previas para marcar como prerrequisito.</p>`;
   const selected = new Set(d.prerequisiteExperienceIds || []);
+  const latest = options[options.length - 1];
+  const earlier = options.slice(0, -1);
+  const option = exp => `
+    <label class="prereq-option">
+      <input type="checkbox" data-experience-prereq="${exp.id}" ${selected.has(exp.id) ? 'checked' : ''} />
+      <span>${escapeHtml(experienceLabel(exp))}</span>
+    </label>
+  `;
   return `
-    <div class="prereq-list">
-      ${options.map(exp => `
-        <label class="prereq-option">
-          <input type="checkbox" data-experience-prereq="${exp.id}" ${selected.has(exp.id) ? 'checked' : ''} />
-          <span>${escapeHtml(experienceLabel(exp))}</span>
-        </label>
-      `).join('')}
+    <div class="prereq-list prereq-experience-picker">
+      <p class="small muted prereq-picker-help">La experiencia inmediatamente anterior queda a la vista. Al marcarla se incluyen tambi\u00e9n las anteriores.</p>
+      ${option(latest)}
+      ${earlier.length ? `
+        <details class="prereq-experience-details">
+          <summary>Ver todas las experiencias previas <span class="badge">${options.length}</span></summary>
+          <div class="prereq-list prereq-experience-earlier">${earlier.map(option).join('')}</div>
+        </details>
+      ` : ''}
     </div>
   `;
 }
