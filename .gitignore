@@ -1,0 +1,30 @@
+# Herramientas locales
+.claude/
+.codex/
+.agents/
+.vscode/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Logs y temporales
+*.log
+firebase-debug.log
+firestore-debug.log
+node_modules/
+**/node_modules/
+
+# Publicaciones temporales y resultados de pruebas
+.tmp_publish*/
+test-results/
+playwright-report/
+
+# Cachés de Firebase
+.firebase/
+
+# Secretos: nunca versionar
+.env
+**/.env
+*.serviceaccount.json
+serviceAccountKey*.json

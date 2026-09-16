@@ -1,4 +1,9 @@
 import { firebaseConfig, ADMIN_EMAILS, USE_DEMO_WHEN_UNCONFIGURED } from './firebaseConfig.js';
+import {
+  PUBLISHED_CURRICULUM_ID,
+  PUBLISHED_CURRICULUM_IDS,
+  buildPublishedCurriculumSnapshot
+} from './publishedCurriculum.js';
 
 const FIREBASE_CDN_VERSION = '10.13.2';
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -52,6 +57,8 @@ const difficultyLabels = {
 };
 
 let services = null;
+let curriculumSyncPromise = null;
+let curriculumSyncTimer = null;
 let state = {
   mode: 'loading',
   firebaseReady: false,
@@ -97,6 +104,24 @@ let state = {
   editingSkillId: null,
   draftSkill: null,
   expandedSkillIds: new Set(),
+  curriculumPublication: {
+    status: 'idle',
+    revision: '',
+    sourceUpdatedAt: '',
+    publishedAt: null,
+    experienceCount: 0,
+    goalCount: 0,
+    byteLength: 0,
+    message: ''
+  },
+  guitarCurriculumPublication: {
+    status: 'idle', revision: '', sourceUpdatedAt: '', publishedAt: null,
+    experienceCount: 0, goalCount: 0, byteLength: 0, message: ''
+  },
+  violinCurriculumPublication: {
+    status: 'idle', revision: '', sourceUpdatedAt: '', publishedAt: null,
+    experienceCount: 0, goalCount: 0, byteLength: 0, message: ''
+  },
   report: null,
   modal: null
 };
@@ -478,6 +503,103 @@ async function loadData() {
     toast(`No pude cargar datos: ${error.message}`, 'error');
   } finally {
     state.loading = false;
+    schedulePublishedCurriculumRefresh();
+  }
+}
+
+function canPublishCurriculum() {
+  return state.mode === 'firebase' && state.profile?.role === 'admin';
+}
+
+function publicationSummary(data = {}, status = 'current', extra = {}) {
+  return {
+    status,
+    revision: data.revision || '',
+    sourceUpdatedAt: data.sourceUpdatedAt || '',
+    publishedAt: data.publishedAt || null,
+    experienceCount: Number(data.experienceCount || 0),
+    goalCount: Number(data.goalCount || 0),
+    byteLength: Number(extra.byteLength || 0),
+    message: extra.message || ''
+  };
+}
+
+function schedulePublishedCurriculumRefresh() {
+  if (!canPublishCurriculum()) return;
+  if (curriculumSyncTimer) clearTimeout(curriculumSyncTimer);
+  curriculumSyncTimer = setTimeout(() => {
+    curriculumSyncTimer = null;
+    Promise.all(PUBLISHED_CURRICULUM_IDS.map(curriculumId => refreshPublishedCurriculum(curriculumId))).catch(error => {
+      // La sincronización automática nunca debe bloquear el editor ni el ingreso.
+      console.warn('No se pudo actualizar un currículo público', error);
+    });
+  }, 250);
+}
+
+async function refreshPublishedCurriculum(curriculumId, { manual = false } = {}) {
+  const publicationConfig = {
+    piano: { label: 'Piano', key: 'curriculumPublication' },
+    guitarra: { label: 'Guitarra', key: 'guitarCurriculumPublication' },
+    violin: { label: 'Violín', key: 'violinCurriculumPublication' },
+  }[curriculumId] || { label: curriculumId, key: 'curriculumPublication' };
+  const routeName = publicationConfig.label;
+  const publicationKey = publicationConfig.key;
+  if (!canPublishCurriculum()) {
+    if (manual) throw new Error('Solo un admin conectado a Firebase puede publicar el currículo.');
+    return null;
+  }
+  if (curriculumSyncPromise) return curriculumSyncPromise;
+
+  state[publicationKey] = {
+    ...state[publicationKey],
+    status: 'syncing',
+    message: `Validando la ruta publicada de ${routeName}…`
+  };
+  if (manual && state.view === 'settings') render();
+
+  curriculumSyncPromise = (async () => {
+    const { snapshot, byteLength } = await buildPublishedCurriculumSnapshot({
+      projectId: firebaseConfig.projectId,
+      arts: state.arts,
+      routes: state.routes,
+      experiences: state.experiences,
+      skills: state.skills
+    }, { curriculumId });
+    const current = await services.data.getPublishedCurriculum(curriculumId);
+
+    if (current?.revision === snapshot.revision) {
+      state[publicationKey] = publicationSummary(current, 'current', {
+        byteLength,
+        message: 'La integración ya coincide con el Mapa de Experiencias.'
+      });
+      if (manual) toast(`La ruta pública de ${routeName} ya estaba actualizada.`);
+      return { changed: false, snapshot, byteLength };
+    }
+
+    await services.data.publishCurriculum(curriculumId, snapshot);
+    state[publicationKey] = publicationSummary(
+      { ...snapshot, publishedAt: nowISO() },
+      'published',
+      { byteLength, message: 'Nueva revisión publicada para Bitácoras y Estudiantes HUB.' }
+    );
+    if (manual) toast(`Ruta de ${routeName} actualizada para Bitácoras y Estudiantes HUB.`);
+    return { changed: true, snapshot, byteLength };
+  })();
+
+  try {
+    return await curriculumSyncPromise;
+  } catch (error) {
+    state[publicationKey] = {
+      ...state[publicationKey],
+      status: 'error',
+      message: error?.code === 'permission-denied'
+        ? 'La publicación está lista en el código, pero sus reglas de Firestore aún no están activas.'
+        : (error.message || `No se pudo publicar la ruta de ${routeName}.`)
+    };
+    throw error;
+  } finally {
+    curriculumSyncPromise = null;
+    if (state.view === 'settings') render();
   }
 }
 
@@ -1714,8 +1836,48 @@ function renderSettings() {
         <p class="small muted">Estos correos quedan reconocidos como admin en la app y también en las reglas sugeridas de Firestore.</p>
       </section>
     </div>
+    ${hasRole('admin') ? renderPublishedCurriculumSettings() : ''}
     ${hasRole('admin') ? renderComponentCatalogSettings() : ''}
     ${hasRole('admin') ? renderCategoryCatalogSettings() : ''}
+  `;
+}
+
+function renderPublishedCurriculumSettings() {
+  const publication = state.curriculumPublication || {};
+  const labels = {
+    idle: 'Pendiente de revisar',
+    syncing: 'Verificando…',
+    current: 'Actualizada',
+    published: 'Publicada',
+    error: 'Requiere atención'
+  };
+  const revision = publication.revision ? publication.revision.replace(/^sha256:/, '').slice(0, 12) : '—';
+  const size = publication.byteLength
+    ? `${Math.ceil(publication.byteLength / 1024).toLocaleString('es-CO')} KB`
+    : '—';
+
+  return `
+    <section class="card stack" style="margin-top:18px">
+      <div class="row-between">
+        <div>
+          <h2>Integración de Piano</h2>
+          <p class="small muted" style="margin:4px 0 0">Publica una copia segura de solo lectura con las experiencias y metas canónicas que consumen Bitácoras y Estudiantes HUB.</p>
+        </div>
+        <span class="badge ${publication.status === 'error' ? 'archived' : publication.status === 'current' || publication.status === 'published' ? 'published' : 'review'}">${escapeHtml(labels[publication.status] || labels.idle)}</span>
+      </div>
+      <div class="grid cols-3">
+        ${statCard('Experiencias', publication.experienceCount || '—', 'Solo las publicadas')}
+        ${statCard('Metas', publication.goalCount || '—', 'Saber por experiencia')}
+        ${statCard('Tamaño', size, `Revisión ${revision}`)}
+      </div>
+      ${publication.message ? `<p class="small ${publication.status === 'error' ? '' : 'muted'}" style="margin:0">${escapeHtml(publication.message)}</p>` : ''}
+      ${publication.sourceUpdatedAt ? `<p class="small muted" style="margin:0">Fuente curricular: ${escapeHtml(formatDate(publication.sourceUpdatedAt))}${publication.publishedAt ? ` · Publicación: ${escapeHtml(formatDate(publication.publishedAt))}` : ''}</p>` : ''}
+      <div class="row">
+        <button class="btn teal" type="button" data-action="refresh-published-curriculum" data-curriculum-id="piano" ${publication.status === 'syncing' ? 'disabled' : ''}>Actualizar Piano</button>
+        <button class="btn teal" type="button" data-action="refresh-published-curriculum" data-curriculum-id="guitarra" ${state.guitarCurriculumPublication?.status === 'syncing' ? 'disabled' : ''}>Actualizar Guitarra</button>
+        <button class="btn teal" type="button" data-action="refresh-published-curriculum" data-curriculum-id="violin" ${state.violinCurriculumPublication?.status === 'syncing' ? 'disabled' : ''}>Publicar Violín</button>
+      </div>
+    </section>
   `;
 }
 
@@ -2000,6 +2162,7 @@ async function handleAction(event) {
     if (action === 'report-preset') setReportPreset(id);
     if (action === 'download-report') downloadReport();
     if (action === 'copy-report') await copyReport();
+    if (action === 'refresh-published-curriculum') await refreshPublishedCurriculum(event.currentTarget.dataset.curriculumId || PUBLISHED_CURRICULUM_ID, { manual: true });
     if (action === 'delete-component-catalog-item') deleteComponentCatalogItem(id);
     if (action === 'restore-component-catalog-item') restoreComponentCatalogItem(id);
     if (action === 'purge-component-catalog-item') purgeComponentCatalogItem(id);
@@ -3576,6 +3739,30 @@ async function createFirebaseServices() {
           settings: { componentCatalog, categoryCatalog }
         };
       },
+      async getPublishedCurriculum(curriculumId) {
+        const snapshot = await fsMod.getDoc(fsMod.doc(db, 'published_curricula', curriculumId));
+        return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+      },
+      async publishCurriculum(curriculumId, payload) {
+        if (state.profile?.role !== 'admin') throw new Error('Solo admins pueden publicar el currículo de integración.');
+        await fsMod.setDoc(fsMod.doc(db, 'published_curricula', curriculumId), {
+          ...payload,
+          publishedAt: fsMod.serverTimestamp()
+        });
+        await logChange({
+          action: 'publish',
+          entityType: 'published_curriculum',
+          entityId: curriculumId,
+          summary: `Currículo público actualizado: ${curriculumId} · ${payload.experienceCount} experiencias · ${payload.goalCount} metas`,
+          after: {
+            schemaVersion: payload.schemaVersion,
+            revision: payload.revision,
+            sourceUpdatedAt: payload.sourceUpdatedAt,
+            experienceCount: payload.experienceCount,
+            goalCount: payload.goalCount
+          }
+        });
+      },
       async saveSettings(payload) {
         if (!state.profile || state.profile.role !== 'admin') throw new Error('Solo admins pueden editar configuración.');
         const data = {
@@ -3737,6 +3924,8 @@ function createDemoServices() {
           settings: db.settings || { componentCatalog: {}, categoryCatalog: [] }
         };
       },
+      async getPublishedCurriculum() { return null; },
+      async publishCurriculum() { throw new Error('La integración pública solo está disponible con Firebase conectado.'); },
       async saveSettings(payload) {
         if (!hasRole('admin')) throw new Error('Solo admins pueden editar configuración.');
         db.settings = { ...(db.settings || {}) };
