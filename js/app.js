@@ -57,7 +57,7 @@ const difficultyLabels = {
 };
 
 let services = null;
-let curriculumSyncPromise = null;
+const curriculumSyncPromises = new Map();
 let curriculumSyncTimer = null;
 let state = {
   mode: 'loading',
@@ -119,6 +119,10 @@ let state = {
     experienceCount: 0, goalCount: 0, byteLength: 0, message: ''
   },
   violinCurriculumPublication: {
+    status: 'idle', revision: '', sourceUpdatedAt: '', publishedAt: null,
+    experienceCount: 0, goalCount: 0, byteLength: 0, message: ''
+  },
+  bateriaCurriculumPublication: {
     status: 'idle', revision: '', sourceUpdatedAt: '', publishedAt: null,
     experienceCount: 0, goalCount: 0, byteLength: 0, message: ''
   },
@@ -541,6 +545,7 @@ async function refreshPublishedCurriculum(curriculumId, { manual = false } = {})
     piano: { label: 'Piano', key: 'curriculumPublication' },
     guitarra: { label: 'Guitarra', key: 'guitarCurriculumPublication' },
     violin: { label: 'Violín', key: 'violinCurriculumPublication' },
+    bateria: { label: 'Batería', key: 'bateriaCurriculumPublication' },
   }[curriculumId] || { label: curriculumId, key: 'curriculumPublication' };
   const routeName = publicationConfig.label;
   const publicationKey = publicationConfig.key;
@@ -548,7 +553,7 @@ async function refreshPublishedCurriculum(curriculumId, { manual = false } = {})
     if (manual) throw new Error('Solo un admin conectado a Firebase puede publicar el currículo.');
     return null;
   }
-  if (curriculumSyncPromise) return curriculumSyncPromise;
+  if (curriculumSyncPromises.has(curriculumId)) return curriculumSyncPromises.get(curriculumId);
 
   state[publicationKey] = {
     ...state[publicationKey],
@@ -557,7 +562,7 @@ async function refreshPublishedCurriculum(curriculumId, { manual = false } = {})
   };
   if (manual && state.view === 'settings') render();
 
-  curriculumSyncPromise = (async () => {
+  const syncPromise = (async () => {
     const { snapshot, byteLength } = await buildPublishedCurriculumSnapshot({
       projectId: firebaseConfig.projectId,
       arts: state.arts,
@@ -585,9 +590,10 @@ async function refreshPublishedCurriculum(curriculumId, { manual = false } = {})
     if (manual) toast(`Ruta de ${routeName} actualizada para Bitácoras y Estudiantes HUB.`);
     return { changed: true, snapshot, byteLength };
   })();
+  curriculumSyncPromises.set(curriculumId, syncPromise);
 
   try {
-    return await curriculumSyncPromise;
+    return await syncPromise;
   } catch (error) {
     state[publicationKey] = {
       ...state[publicationKey],
@@ -598,7 +604,7 @@ async function refreshPublishedCurriculum(curriculumId, { manual = false } = {})
     };
     throw error;
   } finally {
-    curriculumSyncPromise = null;
+    curriculumSyncPromises.delete(curriculumId);
     if (state.view === 'settings') render();
   }
 }
@@ -1876,6 +1882,7 @@ function renderPublishedCurriculumSettings() {
         <button class="btn teal" type="button" data-action="refresh-published-curriculum" data-curriculum-id="piano" ${publication.status === 'syncing' ? 'disabled' : ''}>Actualizar Piano</button>
         <button class="btn teal" type="button" data-action="refresh-published-curriculum" data-curriculum-id="guitarra" ${state.guitarCurriculumPublication?.status === 'syncing' ? 'disabled' : ''}>Actualizar Guitarra</button>
         <button class="btn teal" type="button" data-action="refresh-published-curriculum" data-curriculum-id="violin" ${state.violinCurriculumPublication?.status === 'syncing' ? 'disabled' : ''}>Publicar Violín</button>
+        <button class="btn teal" type="button" data-action="refresh-published-curriculum" data-curriculum-id="bateria" ${state.bateriaCurriculumPublication?.status === 'syncing' ? 'disabled' : ''}>Publicar Batería</button>
       </div>
     </section>
   `;

@@ -1,4 +1,4 @@
-export const PUBLISHED_CURRICULUM_IDS = Object.freeze(['piano', 'guitarra', 'violin']);
+export const PUBLISHED_CURRICULUM_IDS = Object.freeze(['piano', 'guitarra', 'violin', 'bateria']);
 export const PUBLISHED_CURRICULUM_ID = 'piano';
 export const PUBLISHED_CURRICULUM_SCHEMA_VERSION = 1;
 export const FIRESTORE_DOCUMENT_MAX_BYTES = 1_048_576;
@@ -67,7 +67,7 @@ function publicPersonalRepertoire(experience) {
 }
 
 function routeLabel(curriculumId) {
-  return ({ piano: 'Piano', guitarra: 'Guitarra', violin: 'Violín' })[curriculumId] || curriculumId;
+  return ({ piano: 'Piano', guitarra: 'Guitarra', violin: 'Violín', bateria: 'Batería' })[curriculumId] || curriculumId;
 }
 
 function assertPublishedExperienceOrder(experiences, curriculumId) {
