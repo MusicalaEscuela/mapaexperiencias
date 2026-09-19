@@ -172,9 +172,9 @@ service cloud.firestore {
     // Único contrato público entre Mapa de Experiencias y Bitácoras/HUB.
     // No se permite listar la colección ni leer otros documentos.
     match /published_curricula/{curriculumId} {
-      allow get: if curriculumId in ['piano', 'guitarra', 'violin'];
+      allow get: if curriculumId in ['piano', 'guitarra', 'violin', 'bateria'];
       allow list: if false;
-      allow create, update: if curriculumId in ['piano', 'guitarra', 'violin'] &&
+      allow create, update: if curriculumId in ['piano', 'guitarra', 'violin', 'bateria'] &&
         isAdmin() &&
         validPublishedCurriculum(request.resource.data, curriculumId);
       allow delete: if false;
