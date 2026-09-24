@@ -62,6 +62,14 @@ const suggestedAgeOptions = [
   'Adulto (18 años o más)',
   'Multiedad'
 ];
+const estimatedDurationOptions = [
+  '1 clase',
+  '2 a 3 clases',
+  '4 a 6 clases',
+  '7 a 10 clases',
+  '11 a 15 clases',
+  '16 o más clases'
+];
 
 let services = null;
 const curriculumSyncPromises = new Map();
@@ -1484,14 +1492,12 @@ function filteredExperiences() {
     .sort((a,b) => (a.order || 0) - (b.order || 0));
 }
 
-function suggestedAgeOptionsFor(selectedAge = '') {
-  const selected = String(selectedAge || '').trim();
-  const options = selected && !suggestedAgeOptions.includes(selected)
-    ? [selected, ...suggestedAgeOptions]
-    : suggestedAgeOptions;
+function selectOptionsFor(values, selectedValue = '', placeholder) {
+  const selected = String(selectedValue || '').trim();
+  const options = selected && !values.includes(selected) ? [selected, ...values] : values;
   return [
-    `<option value="">Selecciona una etapa</option>`,
-    ...options.map(age => `<option value="${escapeHtml(age)}" ${age === selected ? 'selected' : ''}>${escapeHtml(age)}</option>`)
+    `<option value="">${escapeHtml(placeholder)}</option>`,
+    ...options.map(value => `<option value="${escapeHtml(value)}" ${value === selected ? 'selected' : ''}>${escapeHtml(value)}</option>`)
   ].join('');
 }
 
@@ -1518,8 +1524,8 @@ function renderExperienceEditor() {
           <div class="form-field"><label>Nombre</label><input data-draft="name" value="${escapeHtml(d.name)}" placeholder="Escalas en primera posición" required /></div>
           <div class="form-field"><label>Orden</label><input data-draft="order" type="number" min="1" value="${escapeHtml(d.order || 1)}" required /></div>
           <div class="form-field"><label>Dificultad</label><select data-draft="difficulty">${Object.entries(difficultyLabels).map(([key, label]) => `<option value="${key}" ${d.difficulty === key ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
-          <div class="form-field"><label>Duración estimada</label><input data-draft="estimatedDuration" value="${escapeHtml(d.estimatedDuration)}" placeholder="4 a 6 clases" /></div>
-          <div class="form-field"><label>Edad / etapa sugerida</label><select data-draft="suggestedAge">${suggestedAgeOptionsFor(d.suggestedAge)}</select></div>
+          <div class="form-field"><label>Duración estimada</label><select data-draft="estimatedDuration">${selectOptionsFor(estimatedDurationOptions, d.estimatedDuration, 'Selecciona una duración')}</select></div>
+          <div class="form-field"><label>Edad / etapa sugerida</label><select data-draft="suggestedAge">${selectOptionsFor(suggestedAgeOptions, d.suggestedAge, 'Selecciona una etapa')}</select></div>
         </div>
         <div class="form-field"><label>Descripción</label><textarea data-draft="description" placeholder="Resumen corto de la experiencia">${escapeHtml(d.description)}</textarea></div>
         <div class="form-field"><label>Objetivo general</label><textarea data-draft="objective" placeholder="Qué debe lograr el estudiante">${escapeHtml(d.objective)}</textarea></div>
